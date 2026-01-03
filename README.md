@@ -77,7 +77,7 @@ Switch platforms anytime. Your `.prose` files work everywhere.
 /plugin install open-prose@prose
 ```
 
-Then:
+Then **restart Claude Code** (skills load at startup), and run:
 
 ```
 openprose boot
