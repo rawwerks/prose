@@ -336,23 +336,391 @@ On failure:
 
 ## State Tracking
 
-For in-context execution, track state implicitly:
+OpenProse supports two state management systems. The orchestrator must track execution state to correctly manage variables, loops, parallel branches, and error handling.
 
-| State | Tracking Approach |
-|-------|-------------------|
-| Agent definitions | Collect at program start |
-| Block definitions | Collect at program start (hoisted) |
-| Variable bindings | Hold in working memory |
-| Current position | Track which statement you're executing |
-| Loop counters | Maintain for each active loop |
+### State Categories
 
-### Execution Log Pattern
+| Category | What to Track | Example |
+|----------|---------------|---------|
+| **Agent Registry** | All agent definitions | `researcher: {model: sonnet, prompt: "..."}` |
+| **Block Registry** | All block definitions (hoisted) | `review: {params: [topic], body: [...]}` |
+| **Variable Bindings** | Name → value mapping | `research = "AI safety covers..."` |
+| **Variable Mutability** | Which are `let` vs `const` | `research: let, config: const` |
+| **Execution Position** | Current statement index | Statement 3 of 7 |
+| **Loop State** | Counter, max, condition | Iteration 2 of max 5 |
+| **Parallel State** | Branches, results, strategy | `{a: complete, b: pending}` |
+| **Error State** | Exception, retry count | Retry 2 of 3, error: "timeout" |
+| **Call Stack** | Nested block invocations | `[main, review-block, inner-loop]` |
 
-As you execute, maintain mental notes:
-- "Completed session A, result stored in `research`"
-- "Entering parallel block with 3 branches"
-- "Loop iteration 2 of max 5, condition not yet met"
-- "Caught error, executing catch block"
+---
+
+## State Management: In-Context (Default)
+
+The default approach uses **structured narration** in the conversation history. The orchestrator "thinks aloud" to persist state—what you say becomes what you remember.
+
+### The Narration Protocol
+
+Use emoji-prefixed markers for each state change:
+
+| Emoji | Category | Usage |
+|-------|----------|-------|
+| 📋 | Program | Start, end, definition collection |
+| 📍 | Position | Current statement being executed |
+| 📦 | Binding | Variable assignment or update |
+| ✅ | Success | Session or block completion |
+| ⚠️ | Error | Failures and exceptions |
+| 🔀 | Parallel | Entering, branch status, joining |
+| 🔄 | Loop | Iteration, condition evaluation |
+| 🔗 | Pipeline | Stage progress |
+| 🛡️ | Error handling | Try/catch/finally |
+| ➡️ | Flow | Condition evaluation results |
+
+### Narration Patterns by Construct
+
+#### Session Statements
+```
+📍 Executing: session "Research the topic"
+   [Task tool call]
+✅ Session complete: "Research found that..."
+📦 let research = <result>
+```
+
+#### Parallel Blocks
+```
+🔀 Entering parallel block (3 branches, strategy: all)
+   - security: pending
+   - perf: pending
+   - style: pending
+   [Multiple Task calls]
+🔀 Parallel complete:
+   - security = "No vulnerabilities found..."
+   - perf = "Performance is acceptable..."
+   - style = "Code follows conventions..."
+📦 security, perf, style bound
+```
+
+#### Loop Blocks
+```
+🔄 Starting loop until **task complete** (max: 5)
+
+🔄 Iteration 1 of max 5
+   📍 session "Work on task"
+   ✅ Session complete
+   🔄 Evaluating: **task complete**
+   ➡️ Not satisfied, continuing
+
+🔄 Iteration 2 of max 5
+   📍 session "Work on task"
+   ✅ Session complete
+   🔄 Evaluating: **task complete**
+   ➡️ Satisfied!
+
+🔄 Loop exited: condition satisfied at iteration 2
+```
+
+#### Error Handling
+```
+🛡️ Entering try block
+📍 session "Risky operation"
+⚠️ Session failed: connection timeout
+📦 err = {message: "connection timeout"}
+🛡️ Executing catch block
+📍 session "Handle error" with context: err
+✅ Recovery complete
+🛡️ Executing finally block
+📍 session "Cleanup"
+✅ Cleanup complete
+```
+
+#### Variable Bindings
+```
+📦 let research = "AI safety research covers..." (mutable)
+📦 const config = {model: "opus"} (immutable)
+📦 research = "Updated research..." (reassignment, was: "AI safety...")
+```
+
+### Context Serialization
+
+When passing context to sessions, format appropriately:
+
+| Context Size | Strategy |
+|--------------|----------|
+| < 2000 chars | Pass verbatim |
+| 2000-8000 chars | Summarize to key points |
+| > 8000 chars | Extract essentials only |
+
+**Format:**
+```
+Context provided:
+---
+research: "Key findings about AI safety..."
+analysis: "Risk assessment shows..."
+---
+```
+
+### Complete Execution Trace Example
+
+```prose
+agent researcher:
+  model: sonnet
+
+let research = session: researcher
+  prompt: "Research AI safety"
+
+parallel:
+  a = session "Analyze risk A"
+  b = session "Analyze risk B"
+
+loop until **analysis complete** (max: 3):
+  session "Synthesize"
+    context: { a, b, research }
+```
+
+**Narration:**
+```
+📋 Program Start
+   Collecting definitions...
+   - Agent: researcher (model: sonnet)
+
+📍 Statement 1: let research = session: researcher
+   Spawning with prompt: "Research AI safety"
+   Model: sonnet
+   [Task tool call]
+✅ Session complete: "AI safety research covers alignment..."
+📦 let research = <result>
+
+📍 Statement 2: parallel block
+🔀 Entering parallel (2 branches, strategy: all)
+   [Task: "Analyze risk A"] [Task: "Analyze risk B"]
+🔀 Parallel complete:
+   - a = "Risk A: potential misalignment..."
+   - b = "Risk B: robustness concerns..."
+📦 a, b bound
+
+📍 Statement 3: loop until **analysis complete** (max: 3)
+🔄 Starting loop
+
+🔄 Iteration 1 of max 3
+   📍 session "Synthesize" with context: {a, b, research}
+   [Task with serialized context]
+   ✅ Result: "Initial synthesis shows..."
+   🔄 Evaluating: **analysis complete**
+   ➡️ Not satisfied (synthesis is preliminary)
+
+🔄 Iteration 2 of max 3
+   📍 session "Synthesize" with context: {a, b, research}
+   [Task with serialized context]
+   ✅ Result: "Comprehensive analysis complete..."
+   🔄 Evaluating: **analysis complete**
+   ➡️ Satisfied!
+
+🔄 Loop exited: condition satisfied at iteration 2
+
+📋 Program Complete
+```
+
+---
+
+## State Management: In-File (Beta)
+
+> **⚠️ BETA FEATURE**: In-file state management is experimental. Enable only when explicitly requested by the user with phrases like:
+> - "use file-based state"
+> - "enable persistent state"
+> - "use .prose state directory"
+> - "I need to be able to resume this later"
+
+For long-running programs, complex parallel execution, or resumable workflows, state can be persisted to the filesystem.
+
+### When to Use In-File State
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Simple programs (< 20 statements) | In-context (default) |
+| Long programs (> 50 statements) | Consider in-file |
+| Many parallel branches (> 5) | Consider in-file |
+| Need to resume after interruption | Use in-file |
+| Context window pressure | Use in-file |
+| User explicitly requests | Use in-file |
+
+### Directory Structure
+
+```
+.prose/
+├── execution/
+│   └── run-{YYYYMMDD}-{HHMMSS}-{random}/
+│       ├── program.prose          # Copy of running program
+│       ├── position.json          # Current statement index
+│       ├── variables/
+│       │   ├── {name}.md          # Variable values
+│       │   └── manifest.json      # Metadata (type, mutability)
+│       ├── parallel/
+│       │   └── {block-id}/
+│       │       ├── {branch}.md    # Branch results
+│       │       └── status.json    # Branch status
+│       ├── loops/
+│       │   └── {loop-id}.json     # Iteration state
+│       └── execution.log          # Full trace
+└── checkpoints/
+    └── {name}.json                # Resumable snapshots
+```
+
+### Session ID Format
+
+Each execution generates a unique session ID:
+```
+run-20260103-143052-a7b3c9
+```
+Format: `run-{YYYYMMDD}-{HHMMSS}-{6-char-random}`
+
+### File Formats
+
+#### position.json
+```json
+{
+  "session_id": "run-20260103-143052-a7b3c9",
+  "statement_index": 5,
+  "total_statements": 12,
+  "started_at": "2026-01-03T14:30:52Z",
+  "last_updated": "2026-01-03T14:32:15Z"
+}
+```
+
+#### variables/manifest.json
+```json
+{
+  "variables": [
+    {"name": "research", "type": "let", "file": "research.md"},
+    {"name": "config", "type": "const", "file": "config.md"}
+  ]
+}
+```
+
+#### variables/{name}.md
+```markdown
+# Variable: research
+
+**Type:** let (mutable)
+**Bound at:** Statement 3
+**Last updated:** Statement 7
+
+## Value
+
+AI safety research covers several key areas including alignment,
+robustness, and interpretability. The field has grown significantly
+since 2020 with major contributions from...
+
+[Full value preserved]
+```
+
+#### parallel/{block-id}/status.json
+```json
+{
+  "block_id": "parallel_stmt_5",
+  "strategy": "all",
+  "on_fail": "fail-fast",
+  "branches": [
+    {"name": "security", "status": "complete", "file": "security.md"},
+    {"name": "perf", "status": "complete", "file": "perf.md"},
+    {"name": "style", "status": "pending", "file": null}
+  ]
+}
+```
+
+#### loops/{loop-id}.json
+```json
+{
+  "loop_id": "loop_stmt_8",
+  "type": "until",
+  "condition": "**analysis complete**",
+  "max": 5,
+  "current_iteration": 2,
+  "condition_history": [
+    {"iteration": 1, "result": false, "reason": "synthesis preliminary"},
+    {"iteration": 2, "result": true, "reason": "comprehensive analysis"}
+  ]
+}
+```
+
+### In-File Execution Protocol
+
+When using in-file state management:
+
+1. **Program Start**
+   ```
+   📋 Program Start (file-based state enabled)
+      Session ID: run-20260103-143052-a7b3c9
+      State directory: .prose/execution/run-20260103-143052-a7b3c9/
+   ```
+
+2. **After Each Statement**
+   - Update `position.json`
+   - Write/update affected variable files
+   - Append to `execution.log`
+
+3. **Variable Binding**
+   ```
+   📦 let research = <value>
+      Written to: .prose/execution/.../variables/research.md
+   ```
+
+4. **Parallel Execution**
+   - Create `parallel/{block-id}/` directory
+   - Write each branch result as it completes
+   - Update `status.json` after each branch
+
+5. **Loop Execution**
+   - Create `loops/{loop-id}.json` at loop start
+   - Update after each iteration with condition result
+
+6. **Checkpointing**
+   When user requests or at natural break points:
+   ```
+   💾 Checkpoint saved: .prose/checkpoints/before-deploy.json
+   ```
+
+### Resuming Execution
+
+If execution is interrupted, resume with:
+```
+"Resume the OpenProse program from the last checkpoint"
+```
+
+The orchestrator:
+1. Reads `.prose/execution/run-.../position.json`
+2. Loads variables from `variables/`
+3. Continues from `statement_index`
+
+### Hybrid Approach
+
+For most programs, use a hybrid:
+- **In-context** for small variables and recent state
+- **In-file** for large values (> 5000 chars) and checkpoints
+
+```
+📦 let summary = <short value, kept in-context>
+📦 let full_report = <large value>
+   Written to: .prose/execution/.../variables/full_report.md
+   In-context: [reference to file]
+```
+
+### Enabling In-File State
+
+The user must explicitly request file-based state. The default behavior is always in-context.
+
+**Trigger phrases:**
+- "Run this with file-based state"
+- "Enable persistent state"
+- "Use the .prose state directory"
+- "I need to resume this later"
+- "Track state in files"
+
+**Announcement when enabled:**
+```
+📋 Program Start
+   ⚠️ File-based state management enabled (beta)
+   Session ID: run-20260103-143052-a7b3c9
+   State directory: .prose/execution/run-20260103-143052-a7b3c9/
+```
 
 ---
 

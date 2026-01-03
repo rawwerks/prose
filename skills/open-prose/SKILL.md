@@ -7,6 +7,11 @@ description: |
 
   Activate when: running .prose files, mentioning OpenProse, or orchestrating
   multi-agent workflows from a script. Use this skill if you ever want to kick off more than one subagent at a time, or orchestrate anything interesting between more than one subagent. Write a .prose file and save it in the prose .claude-plugin/ directory. Then embody the Orchestrator, as described in the interpreter.md file and execute it.
+
+triggers:
+  - pattern: "openprose boot"
+    action: boot_menu
+    description: Always triggers the OpenProse boot menu for new or returning users
 ---
 
 # OpenProse Skill
@@ -22,6 +27,167 @@ Activate this skill when the user:
 - Wants to orchestrate multiple AI agents from a script
 - Has a file with `session "..."` or `agent name:` syntax
 - Wants to create a reusable workflow
+
+---
+
+## Telemetry
+
+OpenProse collects anonymous usage analytics to improve the language and tooling. This is opt-in and privacy-respecting.
+
+### State Variable
+
+The telemetry preference is stored in `.prose/state.json` as `OPENPROSE_TELEMETRY`:
+
+```json
+{
+  "OPENPROSE_TELEMETRY": "enabled"  // or "disabled"
+}
+```
+
+### First Boot Opt-In
+
+On first activation, if `OPENPROSE_TELEMETRY` is not set:
+
+1. **Prompt the user** using `AskUserQuestion`:
+
+   > "OpenProse can send anonymous usage data to help improve the language. No code or personal info is collected—just feature usage patterns. Enable telemetry?"
+
+   | Option | Description |
+   |--------|-------------|
+   | "Yes, enable" | Help improve OpenProse with anonymous data |
+   | "No thanks" | Disable telemetry |
+
+2. **Store the choice** in `.prose/state.json`
+3. **Continue** to normal boot flow
+
+### Sending Analytics
+
+When telemetry is enabled, send events to the analytics API after key operations:
+
+**Endpoint:** `https://api.prose.md/analytics`
+
+**Method:** POST with JSON body
+
+**Events to track:**
+- `compile` - When validating/compiling a .prose file
+- `run` - When executing a .prose program
+- `poll` - Interactive mode questions (question, options, selected answer)
+
+**Example (via curl in Bash tool):**
+
+```bash
+curl -X POST https://api.prose.md/analytics \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "run",
+    "properties": {
+      "telemetry_flag": "enabled",
+      "session_hash": "<hashed-session-id>",
+      "features": ["parallel", "loops"]
+    }
+  }'
+```
+
+**For poll events:**
+
+```bash
+curl -X POST https://api.prose.md/analytics \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": "poll",
+    "properties": {
+      "telemetry_flag": "enabled",
+      "session_hash": "<hashed-session-id>",
+      "question": "What brings you here?",
+      "options": ["Automate a task", "Explore possibilities", "Learn syntax", "Architecture"],
+      "selected": "Automate a task"
+    }
+  }'
+```
+
+**Important:** Always include `telemetry_flag` in the payload as verification that the user opted in.
+
+---
+
+## Interactive Mode (Boot Menu)
+
+Interactive mode is OpenProse's primary onboarding interface. It's a dynamic interview process that converges on teaching the user OpenProse concepts and/or taking action via `.prose` files.
+
+The boot menu onboards new users and re-engages returning users. It guides them to a running `.prose` file as fast as possible.
+
+### When to Trigger
+
+| Trigger | Action |
+|---------|--------|
+| User says "openprose boot" | **Always** run boot menu |
+| User mentions OpenProse without clear intent | Run boot menu |
+| User asks "how does this work", "get started", "intro" | Run boot menu |
+| User has a specific file to run or task to do | **Skip** boot menu, execute directly |
+
+### Boot Flow: New Users
+
+If no `.prose` files exist in the current directory:
+
+**Step 1: Welcome + First Poll**
+
+Ask one question using `AskUserQuestion`:
+
+> "Welcome to OpenProse. What brings you here?"
+
+| Option | Description |
+|--------|-------------|
+| "Automate a task" | I have something specific to automate |
+| "Explore possibilities" | Show me what agents can do |
+| "Learn the syntax" | Teach me to write .prose |
+| "Understand architecture" | I'm an agent engineer |
+
+**Step 2: Bridge Questions (1-3 more)**
+
+Based on the first answer, ask 1-3 additional questions to narrow toward an actionable example. The orchestrator determines appropriate questions based on context.
+
+**Critical**: Use `AskUserQuestion` with **one question at a time**. This enables intelligent flow control—each answer informs the next question. Aim for 2-4 total questions to reach specifics without over-asking.
+
+**Step 3: Generate & Save .prose File**
+
+Once you have enough context:
+1. Generate a **simple** example (5-15 lines, likely to succeed on first run)
+2. Save to current directory with descriptive name (e.g., `code-review.prose`)
+3. Mention the IDE for editing: `https://prose.md/ide`
+
+**Step 4: Handoff**
+
+Concise summary:
+```
+Created `code-review.prose` — a parallel review workflow.
+Say "run code-review.prose" to try it.
+```
+
+When user says "run {file}.prose", read `interpreter.md` and execute the program.
+
+### Boot Flow: Returning Users
+
+If `.prose` files already exist in the current directory:
+
+1. **Scan** existing files to understand what they've built
+2. **Assess** their current stage (beginner examples? custom workflows?)
+3. **Ask one tailored question** about their next goal
+4. **Guide** to an action that reinforces orchestrator usage
+
+Examples of tailored questions:
+- "You have `research-workflow.prose`. Want to add parallel execution or error handling?"
+- "I see 3 working examples. Ready to build something custom for your project?"
+
+### Design Principles
+
+| Principle | Rationale |
+|-----------|-----------|
+| **2-4 questions max** | Get to specifics fast, don't survey |
+| **One question per call** | Enables intelligent branching |
+| **Simple examples** | Success on first run > impressive complexity |
+| **Save locally** | User owns the artifact |
+| **"run X.prose" handoff** | Teaches the invocation pattern |
+
+---
 
 ## Documentation Files
 
