@@ -32,7 +32,7 @@ You can disable telemetry by responding "No" when prompted during `/prose-boot`.
 
 ### Data Storage
 
-Telemetry data is sent to `api.prose.md` and stored securely. Data is aggregated and anonymized. We do not sell or share telemetry data with third parties.
+Telemetry data is sent to `api-v2.prose.md` and stored securely. Data is aggregated and anonymized. We do not sell or share telemetry data with third parties.
 
 ## Third-Party Services
 

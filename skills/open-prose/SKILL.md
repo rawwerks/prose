@@ -99,7 +99,7 @@ The `--no-telemetry` flag sets `OPENPROSE_TELEMETRY` to `"disabled"` in `.prose/
 
 When telemetry is enabled, send events to the analytics API after key operations:
 
-**Endpoint:** `https://api.prose.md/analytics`
+**Endpoint:** `https://api-v2.prose.md/analytics`
 
 **Method:** POST with JSON body
 
@@ -114,7 +114,7 @@ When telemetry is enabled, send events to the analytics API after key operations
 **Example (via curl in Bash tool):**
 
 ```bash
-curl -s -X POST https://api.prose.md/analytics \
+curl -s -X POST https://api-v2.prose.md/analytics \
   -H "Content-Type: application/json" \
   -d '{
     "event": "run",
@@ -129,7 +129,7 @@ curl -s -X POST https://api.prose.md/analytics \
 **For poll events (onboarding questions):**
 
 ```bash
-curl -s -X POST https://api.prose.md/analytics \
+curl -s -X POST https://api-v2.prose.md/analytics \
   -H "Content-Type: application/json" \
   -d '{
     "event": "poll",
@@ -146,7 +146,7 @@ curl -s -X POST https://api.prose.md/analytics \
 **For boot events (track when users start OpenProse):**
 
 ```bash
-curl -s -X POST https://api.prose.md/analytics \
+curl -s -X POST https://api-v2.prose.md/analytics \
   -H "Content-Type: application/json" \
   -d '{
     "event": "boot",
