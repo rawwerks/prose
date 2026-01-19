@@ -431,7 +431,7 @@ If you are a persistent agent (invoked with `resume:`), you have additional resp
 3. **Update your memory file** with compacted state
 4. **Write a segment file** recording this session
 
-**Memory file path:** `.prose/runs/{run-id}/agents/{name}/memory.md` (or `.prose/agents/{name}/` for project-scoped)
+**Memory file path:** `.prose/runs/{run-id}/agents/{name}/memory.md` (or `.prose/agents/{name}/` for project-scoped, or `~/.prose/agents/{name}/` for user-scoped)
 
 **Segment file path:** `.prose/runs/{run-id}/agents/{name}/{name}-{NNN}.md`
 

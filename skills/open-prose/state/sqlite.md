@@ -60,9 +60,9 @@ The database lives within the standard run directory:
 
 Example: `.prose/runs/20260116-143052-a7b3c9/state.db`
 
-### Project-Scoped Agents
+### Project-Scoped and User-Scoped Agents
 
-Execution-scoped agents (the default) live in the per-run `state.db`. However, **project-scoped agents** (`persist: project`) must survive across runs.
+Execution-scoped agents (the default) live in the per-run `state.db`. However, **project-scoped agents** (`persist: project`) and **user-scoped agents** (`persist: user`) must survive across runs.
 
 For project-scoped agents, use a separate database:
 
@@ -74,7 +74,14 @@ For project-scoped agents, use a separate database:
         └── state.db          # Execution-scoped state (dies with run)
 ```
 
-The `agents` and `agent_segments` tables for project-scoped agents live in `.prose/agents.db`, not the per-run `state.db`. The VM initializes this database on first use and provides the correct path to subagents.
+For user-scoped agents, use a database in the home directory:
+
+```
+~/.prose/
+└── agents.db                 # User-scoped agent memory (survives across projects)
+```
+
+The `agents` and `agent_segments` tables for project-scoped agents live in `.prose/agents.db`, and for user-scoped agents live in `~/.prose/agents.db`. The VM initializes these databases on first use and provides the correct path to subagents.
 
 ---
 
@@ -191,7 +198,7 @@ CREATE TABLE IF NOT EXISTS bindings (
 -- Persistent agent memory
 CREATE TABLE IF NOT EXISTS agents (
     name TEXT PRIMARY KEY,
-    scope TEXT,  -- execution, project, custom
+    scope TEXT,  -- execution, project, user, custom
     memory TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
@@ -361,7 +368,7 @@ Record this segment:
   sqlite3 .prose/runs/20260116-143052-a7b3c9/state.db "INSERT INTO agent_segments (agent_name, segment_number, prompt, summary) VALUES ('captain', 3, '...', '...')"
 ```
 
-For project-scoped agents, use `.prose/agents.db` instead.
+For project-scoped agents, use `.prose/agents.db`. For user-scoped agents, use `~/.prose/agents.db`.
 
 ---
 

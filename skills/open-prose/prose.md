@@ -25,7 +25,7 @@ OpenProse is invoked via `prose` commands:
 | Command | Action |
 |---------|--------|
 | `prose run <file.prose>` | Execute a local `.prose` program |
-| `prose run @handle/slug` | Fetch from registry and execute |
+| `prose run handle/slug` | Fetch from registry and execute |
 | `prose compile <file>` | Validate syntax without executing |
 | `prose help` | Show help and examples |
 | `prose examples` | List or run bundled examples |
@@ -33,26 +33,26 @@ OpenProse is invoked via `prose` commands:
 
 ### Remote Programs
 
-You can run any `.prose` program from a URL:
+You can run any `.prose` program from a URL or registry reference:
 
 ```bash
 # Direct URL — any fetchable URL works
 prose run https://raw.githubusercontent.com/openprose/prose/main/skills/open-prose/examples/48-habit-miner.prose
 
-# Registry shorthand — @handle/slug auto-resolves to p.prose.md
-prose run @irl-danb/habit-miner    # Fetches https://p.prose.md/@irl-danb/habit-miner
-prose run @alice/code-review       # Fetches https://p.prose.md/@alice/code-review
+# Registry shorthand — handle/slug resolves to p.prose.md
+prose run irl-danb/habit-miner     # Fetches https://p.prose.md/irl-danb/habit-miner
+prose run alice/code-review        # Fetches https://p.prose.md/alice/code-review
 ```
 
 **Resolution rules:**
 - Starts with `http://` or `https://` → fetch directly
-- Starts with `@` → resolve to `https://p.prose.md/@handle/slug`
+- Contains `/` but no protocol → resolve to `https://p.prose.md/{path}`
 - Otherwise → treat as local file path
 
 This same resolution applies to `use` statements inside programs:
 ```prose
 use "https://example.com/my-program.prose"  # Direct URL
-use "@alice/research" as research            # Registry shorthand
+use "alice/research" as research             # Registry shorthand
 ```
 
 ---
@@ -107,7 +107,7 @@ Traditional dependency injection containers wire up components from configuratio
 
 | Declared Primitive           | Your Responsibility                                        |
 | ---------------------------- | ---------------------------------------------------------- |
-| `use "@handle/slug" as name` | Fetch program from p.prose.md, register in Import Registry |
+| `use "handle/slug" as name` | Fetch program from p.prose.md, register in Import Registry |
 | `input topic: "..."`         | Bind value from caller, make available as variable         |
 | `output findings = ...`      | Mark value as output, return to caller on completion       |
 | `agent researcher:`          | Register this agent template for later use                 |
@@ -143,9 +143,10 @@ The OpenProse VM follows the program structure **strictly** but uses **intellige
 
 ## Directory Structure
 
-All execution state lives in `.prose/`:
+All execution state lives in `.prose/` (project-level) or `~/.prose/` (user-level):
 
 ```
+# Project-level state (in working directory)
 .prose/
 ├── .env                              # Config/telemetry (simple key=value format)
 ├── runs/
@@ -163,6 +164,14 @@ All execution state lives in `.prose/`:
 │               ├── {name}-002.md
 │               └── ...
 └── agents/                           # Project-scoped agent memory
+    └── {name}/
+        ├── memory.md
+        ├── {name}-001.md
+        └── ...
+
+# User-level state (in home directory)
+~/.prose/
+└── agents/                           # User-scoped agent memory (cross-project)
     └── {name}/
         ├── memory.md
         ├── {name}-001.md
@@ -338,7 +347,7 @@ params := "(" NAME ("," NAME)\* ")"
 
 property := "model:" ("sonnet" | "opus" | "haiku")
 | "prompt:" STRING
-| "persist:" ("true" | "project" | STRING)
+| "persist:" ("true" | "project" | "user" | STRING)
 | "context:" (NAME | "[" NAME* "]" | "{" NAME* "}")
 | "retry:" NUMBER
 | "backoff:" ("none" | "linear" | "exponential")
@@ -433,6 +442,12 @@ agent advisor:
   persist: project
   prompt: "You provide architectural guidance"
 
+# Persistent agent (user-scoped, cross-project)
+agent inspector:
+  model: opus
+  persist: user
+  prompt: "You maintain insights across all projects on this machine"
+
 # Persistent agent (explicit path)
 agent shared:
   model: opus
@@ -470,11 +485,12 @@ let review = resume: captain
 
 ### Memory Scoping
 
-| Scope               | Declaration        | Path                              | Lifetime        |
-| ------------------- | ------------------ | --------------------------------- | --------------- |
-| Execution (default) | `persist: true`    | `.prose/runs/{id}/agents/{name}/` | Dies with run   |
-| Project             | `persist: project` | `.prose/agents/{name}/`           | Survives runs   |
-| Custom              | `persist: "path"`  | Specified path                    | User-controlled |
+| Scope               | Declaration        | Path                              | Lifetime                 |
+| ------------------- | ------------------ | --------------------------------- | ------------------------ |
+| Execution (default) | `persist: true`    | `.prose/runs/{id}/agents/{name}/` | Dies with run            |
+| Project             | `persist: project` | `.prose/agents/{name}/`           | Survives runs in project |
+| User                | `persist: user`    | `~/.prose/agents/{name}/`         | Survives across projects |
+| Custom              | `persist: "path"`  | Specified path                    | User-controlled          |
 
 ---
 
@@ -681,17 +697,17 @@ Programs can import and invoke other programs, enabling modular workflows. Progr
 Use the `use` statement to import a program:
 
 ```prose
-use "@alice/research"
-use "@bob/critique" as critic
+use "alice/research"
+use "bob/critique" as critic
 ```
 
-The import path follows the format `@handle/slug`. An optional alias (`as name`) allows referencing by a shorter name.
+The import path follows the format `handle/slug`. An optional alias (`as name`) allows referencing by a shorter name.
 
 ### Program URL Resolution
 
 When the VM encounters a `use` statement:
 
-1. Fetch the program from `https://p.prose.md/@handle/slug`
+1. Fetch the program from `https://p.prose.md/handle/slug`
 2. Parse the program to extract its contract (inputs/outputs)
 3. Register the program in the Import Registry
 
@@ -786,7 +802,7 @@ The `output` keyword:
 Call an imported program by providing its inputs:
 
 ```prose
-use "@alice/research" as research
+use "alice/research" as research
 
 let result = research(topic: "quantum computing")
 ```

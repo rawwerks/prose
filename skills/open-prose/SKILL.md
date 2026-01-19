@@ -27,7 +27,7 @@ When a user invokes `prose <command>`, intelligently route based on intent:
 |---------|--------|
 | `prose help` | Load `help.md`, guide user to what they need |
 | `prose run <file>` | Load VM (`prose.md` + state backend), execute the program |
-| `prose run @handle/slug` | Fetch from registry, then execute (see Remote Programs below) |
+| `prose run handle/slug` | Fetch from registry, then execute (see Remote Programs below) |
 | `prose compile <file>` | Load `compiler.md`, validate the program |
 | `prose update` | Run migration (see Migration section below) |
 | `prose examples` | Show or run example programs from `examples/` |
@@ -58,15 +58,15 @@ There is only ONE skill: `open-prose`. There are NO separate skills like `prose-
 
 ### Remote Programs
 
-You can run any `.prose` program from a URL:
+You can run any `.prose` program from a URL or registry reference:
 
 ```bash
 # Direct URL — any fetchable URL works
 prose run https://raw.githubusercontent.com/openprose/prose/main/skills/open-prose/examples/48-habit-miner.prose
 
-# Registry shorthand — @handle/slug auto-resolves to p.prose.md
-prose run @irl-danb/habit-miner
-prose run @alice/code-review
+# Registry shorthand — handle/slug resolves to p.prose.md
+prose run irl-danb/habit-miner
+prose run alice/code-review
 ```
 
 **Resolution rules:**
@@ -74,7 +74,7 @@ prose run @alice/code-review
 | Input | Resolution |
 |-------|------------|
 | Starts with `http://` or `https://` | Fetch directly from URL |
-| Starts with `@` | Resolve to `https://p.prose.md/@handle/slug` |
+| Contains `/` but no protocol | Resolve to `https://p.prose.md/{path}` |
 | Otherwise | Treat as local file path |
 
 **Steps for remote programs:**
@@ -87,7 +87,7 @@ This same resolution applies to `use` statements inside `.prose` files:
 
 ```prose
 use "https://example.com/my-program.prose"  # Direct URL
-use "@alice/research" as research            # Registry shorthand
+use "alice/research" as research             # Registry shorthand
 ```
 
 ---
@@ -117,6 +117,12 @@ use "@alice/research" as research            # Registry shorthand
 | `.prose/runs/`   | User's working directory | Runtime state for file-based mode   |
 | `.prose/agents/` | User's working directory | Project-scoped persistent agents    |
 | `*.prose` files  | User's project           | User-created programs to execute    |
+
+**User-level files** (in user's home directory, shared across all projects):
+
+| File/Directory    | Location         | Purpose                                  |
+| ----------------- | ---------------- | ---------------------------------------- |
+| `~/.prose/agents/`| User's home dir  | User-scoped persistent agents (cross-project) |
 
 When you need to read `prose.md` or `compiler.md`, read them from the same directory where you found this SKILL.md file. Never search the user's workspace for these files.
 

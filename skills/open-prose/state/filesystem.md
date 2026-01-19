@@ -32,6 +32,7 @@ File-based state persists all execution artifacts to disk. This enables:
 ## Directory Structure
 
 ```
+# Project-level state (in working directory)
 .prose/
 ├── .env                              # Config/telemetry (simple key=value format)
 ├── runs/
@@ -50,6 +51,14 @@ File-based state persists all execution artifacts to disk. This enables:
 │               ├── {name}-002.md
 │               └── ...
 └── agents/                           # Project-scoped agent memory
+    └── {name}/
+        ├── memory.md
+        ├── {name}-001.md
+        └── ...
+
+# User-level state (in home directory)
+~/.prose/
+└── agents/                           # User-scoped agent memory (cross-project)
     └── {name}/
         ├── memory.md
         ├── {name}-001.md
@@ -440,7 +449,8 @@ This allows unlimited nesting depth while maintaining consistent structure at ev
 | Scope | Declaration | Path | Lifetime |
 |-------|-------------|------|----------|
 | Execution (default) | `persist: true` | `.prose/runs/{id}/agents/{name}/` | Dies with run |
-| Project | `persist: project` | `.prose/agents/{name}/` | Survives runs |
+| Project | `persist: project` | `.prose/agents/{name}/` | Survives runs in project |
+| User | `persist: user` | `~/.prose/agents/{name}/` | Survives across projects |
 | Custom | `persist: "path"` | Specified path | User-controlled |
 
 ---

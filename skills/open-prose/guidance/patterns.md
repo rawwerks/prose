@@ -226,7 +226,7 @@ Match model capability to task complexity:
 ```prose
 agent captain:
   model: sonnet  # Orchestration and coordination
-  persist: true
+  persist: true  # Execution-scoped (dies with run)
   prompt: "You coordinate the team and review work"
 
 agent researcher:
@@ -236,6 +236,11 @@ agent researcher:
 agent formatter:
   model: haiku  # Simple transformation (use sparingly)
   prompt: "You format text into consistent structure"
+
+agent preferences:
+  model: sonnet
+  persist: user  # User-scoped (survives across projects)
+  prompt: "You remember user preferences and patterns"
 
 # Captain orchestrates, specialists do the hard work
 session: captain

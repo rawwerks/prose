@@ -360,8 +360,8 @@ CREATE TABLE IF NOT EXISTS openprose.bindings (
 -- Persistent agent memory
 CREATE TABLE IF NOT EXISTS openprose.agents (
     name TEXT NOT NULL,
-    run_id TEXT,  -- NULL for project-scoped agents
-    scope TEXT NOT NULL CHECK (scope IN ('execution', 'project', 'custom')),
+    run_id TEXT,  -- NULL for project-scoped and user-scoped agents
+    scope TEXT NOT NULL CHECK (scope IN ('execution', 'project', 'user', 'custom')),
     memory TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -702,9 +702,11 @@ UPDATE openprose.run SET status = 'failed' WHERE id = '20260116-143052-a7b3c9';
 
 ---
 
-## Project-Scoped Agents
+## Project-Scoped and User-Scoped Agents
 
-Execution-scoped agents (the default) use `run_id = specific value`. **Project-scoped agents** (`persist: project`) use `run_id IS NULL` and survive across runs.
+Execution-scoped agents (the default) use `run_id = specific value`. **Project-scoped agents** (`persist: project`) and **user-scoped agents** (`persist: user`) use `run_id IS NULL` and survive across runs.
+
+For user-scoped agents, the VM maintains a separate connection or uses a naming convention to distinguish them from project-scoped agents. One approach is to prefix user-scoped agent names with `__user__` in the same database, or use a separate user-level database configured via `OPENPROSE_POSTGRES_USER_URL`.
 
 ### The run_id Approach
 
