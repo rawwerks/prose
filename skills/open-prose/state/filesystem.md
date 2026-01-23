@@ -91,106 +91,76 @@ Simple key=value configuration file:
 OPENPROSE_POSTGRES_URL=postgresql://user:pass@localhost:5432/prose
 ```
 
-**Why this format:** Self-evident, no JSON parsing needed, familiar to developers.
-
 ---
 
-### `state.md`
+### `state.md` — Append-Only Execution Log
 
-The execution state file shows the program's current position using **annotated code snippets**. This makes it self-evident where execution is and what has happened.
+The state file is an **append-only log** of execution events. The VM appends entries as execution progresses rather than rewriting the entire file after each statement.
 
 **Only the VM writes this file.** Subagents never modify `state.md`.
 
-The format shows:
-- **Full history** of executed code with inline annotations
-- **Current position** clearly marked with status
-- **~5-10 lines ahead** of current position (what's coming next)
-- **Index** of all bindings and agents with file paths
+**Key principle:** The VM's conversation history is the primary execution state. The state file exists for resumption and debugging, not as the source of truth during normal execution.
+
+#### Format
 
 ```markdown
-# Execution State
+# run:20260115-143052-a7b3c9 feature-implementation.prose
 
-run: 20260115-143052-a7b3c9
-program: feature-implementation.prose
-started: 2026-01-15T14:30:52Z
-updated: 2026-01-15T14:35:22Z
-
-## Execution Trace
-
-```prose
-agent researcher:
-  model: sonnet
-  prompt: "You research topics thoroughly"
-
-agent captain:
-  model: opus
-  persist: true
-  prompt: "You coordinate and review"
-
-let research = session: researcher           # --> bindings/research.md
-  prompt: "Research AI safety"
-
-parallel:
-  a = session "Analyze risk A"               # --> bindings/a.md (complete)
-  b = session "Analyze risk B"               # <-- EXECUTING
-
-loop until **analysis complete** (max: 3):   # [not yet entered]
-  session "Synthesize"
-    context: { a, b, research }
-
-resume: captain                              # [...next...]
-  prompt: "Review the synthesis"
-  context: synthesis
+1→ research ✓
+2→ ∥start a,b,c
+2a→ a ✓
+2b→ b ✓
+2c→ c ✓
+2→ ∥done
+3→ loop:1/5
+3→ synthesis ✓
+3→ loop:2/5 exit(**complete**)
+4→ captain ✓
+---end 2026-01-15T14:35:22Z
 ```
 
-## Active Constructs
+#### Event Markers
 
-### Parallel (lines 14-16)
+| Marker | Meaning | Example |
+|--------|---------|---------|
+| `N→ name ✓` | Statement N completed, binding written | `1→ research ✓` |
+| `N→ ✓` | Anonymous session completed | `5→ ✓` |
+| `N→ ∥start a,b,c` | Parallel block started with branches | `2→ ∥start a,b,c` |
+| `Na→ name ✓` | Parallel branch completed | `2a→ a ✓` |
+| `N→ ∥done` | Parallel block joined | `2→ ∥done` |
+| `N→ loop:I/M` | Loop iteration I of max M | `3→ loop:2/5` |
+| `N→ loop:I/M exit(reason)` | Loop exited | `3→ loop:3/5 exit(**done**)` |
+| `N→ block:name#ID` | Block invocation started | `4→ block:process#43` |
+| `N→ #ID done` | Block invocation completed | `4→ #43 done` |
+| `N→ ✗ error` | Statement failed | `5→ ✗ timeout` |
+| `N→ retry:A/M` | Retry attempt A of max M | `5→ retry:2/3` |
+| `---end TIMESTAMP` | Program completed | `---end 2026-01-15T14:35:22Z` |
+| `---error TIMESTAMP msg` | Program failed | `---error 2026-01-15T14:35:22Z timeout` |
 
-- a: complete
-- b: executing
+#### When the VM Writes
 
-### Loop (lines 18-21)
+The VM appends to `state.md`:
 
-- status: not yet entered
-- iteration: 0/3
-- condition: **analysis complete**
+| Event | Action |
+|-------|--------|
+| Statement completes | Append completion marker |
+| Parallel starts/joins | Append parallel markers |
+| Loop iteration/exit | Append loop marker |
+| Block invoke/complete | Append block markers |
+| Error occurs | Append error marker |
+| Program ends | Append end marker |
 
-## Index
+**Note:** The VM does NOT rewrite the entire file. Each write is a single line append, keeping token generation minimal.
 
-### Bindings
+#### Resumption
 
-| Name | Kind | Path | Execution ID |
-|------|------|------|--------------|
-| research | let | bindings/research.md | (root) |
-| a | let | bindings/a.md | (root) |
-| result | let | bindings/result__43.md | 43 |
+To resume an interrupted run, the VM:
 
-### Agents
+1. Reads `state.md` to find the last completed statement
+2. Scans `bindings/` directory for existing outputs
+3. Continues from the next statement
 
-| Name | Scope | Path |
-|------|-------|------|
-| captain | execution | agents/captain/ |
-
-## Call Stack
-
-| execution_id | block | depth | status |
-|--------------|-------|-------|--------|
-| 43 | process | 3 | executing |
-| 42 | process | 2 | waiting |
-| 41 | process | 1 | waiting |
-```
-
-**Status annotations:**
-
-| Annotation | Meaning |
-|------------|---------|
-| `# --> bindings/name.md` | Output written to this file |
-| `# <-- EXECUTING` | Currently executing this statement |
-| `# (complete)` | Statement finished successfully |
-| `# [not yet entered]` | Block not yet reached |
-| `# [...next...]` | Coming up next |
-| `# <-- RETRYING (attempt 2/3)` | Retry in progress |
+The append-only format makes this straightforward—find the last line, determine position.
 
 ---
 
@@ -458,10 +428,10 @@ This allows unlimited nesting depth while maintaining consistent structure at ev
 After each statement completes, the VM:
 
 1. **Confirms** subagent wrote its output file(s)
-2. **Updates** `state.md` with new position and annotations
+2. **Appends** a single-line marker to `state.md`
 3. **Continues** to next statement
 
-The VM never does compaction—that's the subagent's responsibility.
+The VM appends one line per event—it never rewrites the full state file. This keeps token generation minimal during execution.
 
 ---
 
@@ -469,8 +439,8 @@ The VM never does compaction—that's the subagent's responsibility.
 
 If execution is interrupted, resume by:
 
-1. Reading `.prose/runs/{id}/state.md` to find current position
-2. Loading all bindings from `bindings/`
-3. Continuing from the marked position
+1. Reading `.prose/runs/{id}/state.md` — find the last completed marker
+2. Scanning `bindings/` directory to confirm existing outputs
+3. Continuing from the next statement
 
-The `state.md` file contains everything needed to understand where execution stopped and what has been accomplished.
+The append-only log format makes resumption simple: the last line indicates where execution stopped.

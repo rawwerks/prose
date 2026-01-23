@@ -97,15 +97,14 @@ The VM (the orchestrating agent running the .prose program) is responsible for:
 |----------------|-------------|
 | **Database creation** | Create `state.db` and initialize core tables at run start |
 | **Program registration** | Store the program source and metadata |
-| **Execution tracking** | Update position, status, and timing as statements execute |
+| **Execution tracking** | Append completion records (not update-per-statement) |
 | **Subagent spawning** | Spawn sessions via Task tool with database path and instructions |
 | **Parallel coordination** | Track branch status, implement join strategies |
 | **Loop management** | Track iteration counts, evaluate conditions |
 | **Error aggregation** | Record failures, manage retry state |
-| **Context preservation** | Maintain sufficient narration in the main conversation thread so execution can be understood and resumed |
 | **Completion detection** | Mark the run as complete when finished |
 
-**Critical:** The VM must preserve enough context in its own conversation to understand execution state without re-reading the entire database. The database is for coordination and persistence, not a replacement for working memory.
+**Critical:** The VM's conversation history is the primary execution state. The database exists for persistence and coordination, not as the source of truth during normal execution. The VM appends records on completion events—it does NOT update the database after every statement.
 
 ### Subagent Responsibilities
 
@@ -374,92 +373,95 @@ For project-scoped agents, use `.prose/agents.db`. For user-scoped agents, use `
 
 ## Context Preservation in Main Thread
 
-**This is critical.** The database is for persistence and coordination, but the VM must still maintain conversational context.
+The VM's conversation history is the primary execution state. The database exists for persistence and debugging.
 
-### What the VM Must Narrate
+### Compact Narration
 
-Even with SQLite state, the VM should narrate key events in its conversation:
+Use minimal markers in conversation (same as filesystem/in-context state):
 
 ```
-[Position] Statement 3: let research = session: researcher
-   Spawning session, will write to state.db
-   [Task tool call]
-[Success] Session complete, binding written to DB
-[Binding] research = <stored in state.db>
+1→ research ✓
+∥ [a b c] done
+loop:2/5 exit
 ```
 
-### Why Both?
+The Task tool calls and results are in the conversation—no need to narrate them verbosely.
+
+### Why Both Conversation and Database?
 
 | Purpose | Mechanism |
 |---------|-----------|
-| **Working memory** | Conversation narration (what the VM "remembers" without re-querying) |
-| **Durable state** | SQLite database (survives context limits, enables resumption) |
-| **Subagent coordination** | SQLite database (shared access point) |
-| **Debugging/inspection** | SQLite database (queryable history) |
+| **Working memory** | Conversation (what the VM "remembers" without querying) |
+| **Durable state** | Database (survives context limits, enables resumption) |
+| **Debugging/inspection** | Database (queryable history) |
 
-The narration is the VM's "mental model" of execution. The database is the "source of truth" for resumption and inspection.
+The conversation is primary; the database is for persistence and inspection.
 
 ---
 
 ## Parallel Execution
 
-For parallel blocks, the VM uses the `metadata` JSON field to track branches. **Only the VM writes to the `execution` table.**
+For parallel blocks, **append completion records** rather than updating status. Only the VM writes to the `execution` table.
 
 ```sql
--- VM marks parallel start
+-- VM appends parallel start
 INSERT INTO execution (statement_index, statement_text, status, metadata)
-VALUES (5, 'parallel:', 'executing', '{"parallel_id": "p1", "strategy": "all", "branches": ["a", "b", "c"]}');
+VALUES (5, 'parallel:', 'started', '{"parallel_id": "p1", "branches": ["a", "b", "c"]}');
 
--- VM creates execution record for each branch
-INSERT INTO execution (statement_index, statement_text, status, parent_id, metadata)
-VALUES (6, 'a = session "Task A"', 'executing', 5, '{"parallel_id": "p1", "branch": "a"}');
+-- Subagents write to bindings table, Task tool signals completion
+-- VM appends completion record for each branch as it returns
+INSERT INTO execution (statement_index, statement_text, status, metadata)
+VALUES (5, 'parallel:a', 'completed', '{"parallel_id": "p1", "branch": "a"}');
 
--- Subagent writes its output to bindings table (see "From Subagents" section)
--- Task tool signals completion to VM via substrate
-
--- VM marks branch complete after Task returns
-UPDATE execution SET status = 'completed', completed_at = datetime('now')
-WHERE json_extract(metadata, '$.parallel_id') = 'p1' AND json_extract(metadata, '$.branch') = 'a';
-
--- VM checks if all branches complete
-SELECT COUNT(*) as pending FROM execution
-WHERE json_extract(metadata, '$.parallel_id') = 'p1' AND status != 'completed';
+-- When all branches complete, VM appends join record
+INSERT INTO execution (statement_index, statement_text, status, metadata)
+VALUES (5, 'parallel:', 'joined', '{"parallel_id": "p1"}');
 ```
+
+**Append-only:** No UPDATEs to existing rows. Each event is a new INSERT.
 
 ---
 
 ## Loop Tracking
 
 ```sql
--- Loop metadata tracks iteration state
+-- VM appends loop start
 INSERT INTO execution (statement_index, statement_text, status, metadata)
-VALUES (10, 'loop until **analysis complete** (max: 5):', 'executing',
-  '{"loop_id": "l1", "max_iterations": 5, "current_iteration": 0, "condition": "**analysis complete**"}');
+VALUES (10, 'loop', 'started', '{"loop_id": "l1", "max": 5, "condition": "**complete**"}');
 
--- Update iteration
-UPDATE execution
-SET metadata = json_set(metadata, '$.current_iteration', 2),
-    updated_at = datetime('now')
-WHERE json_extract(metadata, '$.loop_id') = 'l1';
+-- VM appends each iteration completion
+INSERT INTO execution (statement_index, statement_text, status, metadata)
+VALUES (10, 'loop', 'iteration', '{"loop_id": "l1", "iteration": 1}');
+
+INSERT INTO execution (statement_index, statement_text, status, metadata)
+VALUES (10, 'loop', 'iteration', '{"loop_id": "l1", "iteration": 2}');
+
+-- VM appends exit
+INSERT INTO execution (statement_index, statement_text, status, metadata)
+VALUES (10, 'loop', 'exited', '{"loop_id": "l1", "iteration": 2, "reason": "condition_satisfied"}');
 ```
+
+**Append-only:** Iterations are appended, not updated. Query `MAX(iteration)` to find current state.
 
 ---
 
 ## Error Handling
 
 ```sql
--- Record failure
-UPDATE execution
-SET status = 'failed',
-    error_message = 'Connection timeout after 30s',
-    completed_at = datetime('now')
-WHERE id = 15;
+-- Append failure record
+INSERT INTO execution (statement_index, statement_text, status, error_message, metadata)
+VALUES (15, 'session "Risky"', 'failed', 'Connection timeout after 30s', '{}');
 
--- Track retry attempts in metadata
-UPDATE execution
-SET metadata = json_set(metadata, '$.retry_attempt', 2, '$.max_retries', 3)
-WHERE id = 15;
+-- Append retry attempt
+INSERT INTO execution (statement_index, statement_text, status, metadata)
+VALUES (15, 'session "Risky"', 'retry', '{"attempt": 2, "max": 3}');
+
+-- Append eventual success or final failure
+INSERT INTO execution (statement_index, statement_text, status, metadata)
+VALUES (15, 'session "Risky"', 'completed', '{"attempt": 2}');
 ```
+
+**Append-only:** Each retry is a new record. Query for the latest status by statement_index.
 
 ---
 
@@ -562,11 +564,11 @@ The database is your workspace. Use it.
 SQLite state management:
 
 1. Uses a **single database file** per run
-2. Provides **clear responsibility separation** between VM and subagents
-3. Enables **structured queries** for state inspection
-4. Supports **atomic transactions** for reliable updates
+2. Uses **append-only writes** for minimal token overhead
+3. Provides **clear responsibility separation** between VM and subagents
+4. Enables **structured queries** for state inspection
 5. Allows **flexible schema evolution** as needed
 6. Requires the **sqlite3 CLI** tool
 7. Is **experimental**—expect changes
 
-The core contract: the VM manages execution flow and spawns subagents; subagents write their own outputs directly to the database. Both maintain the principle that what happens is recorded, and what is recorded can be queried.
+The core contract: the VM appends execution events (not updates); subagents write their own outputs directly to the database. The conversation is primary state; the database is for persistence and inspection.

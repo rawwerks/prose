@@ -152,7 +152,7 @@ All execution state lives in `.prose/` (project-level) or `~/.prose/` (user-leve
 ├── runs/
 │   └── {YYYYMMDD}-{HHMMSS}-{random}/
 │       ├── program.prose             # Copy of running program
-│       ├── state.md                  # Execution state with code snippets
+│       ├── state.md                  # Append-only execution log
 │       ├── bindings/
 │       │   └── {name}.md             # All named values (input/output/let/const)
 │       ├── imports/
@@ -310,10 +310,9 @@ Summary: Processed chunk into 3 parts
 
 The VM:
 1. Receives the confirmation (pointer + summary, not full value)
-2. Records the binding location in its state
-3. Updates `state.md` with new position/status
-4. Continues execution
-5. Does NOT read the full binding—only passes the reference forward
+2. Appends a single-line marker to `state.md` (e.g., `3→ research ✓`)
+3. Continues execution
+4. Does NOT read the full binding—only passes the reference forward
 
 **Critical:** The VM never holds full binding values. It tracks locations and passes references. This keeps the VM's context lean and enables arbitrarily large intermediate values.
 
@@ -1096,19 +1095,15 @@ If limit exceeded:
 
 ### Call Stack in State
 
-The VM tracks the call stack in its state. For filesystem state, this appears in `state.md`:
+The VM tracks the call stack via markers in `state.md` (filesystem) or conversation (in-context):
 
-```markdown
-## Call Stack
-
-| execution_id | block   | depth | status    |
-| ------------ | ------- | ----- | --------- |
-| 3            | process | 3     | executing |
-| 2            | process | 2     | waiting   |
-| 1            | process | 1     | waiting   |
+```
+#1 process(data,5)
+  #2 process(parts[0],4)
+    #3 process(subparts[0],3)  ← executing
 ```
 
-For in-context state, use `[Frame+]` and `[Frame-]` markers (see `state/in-context.md`).
+Block invocations use `#ID block` to start and `#ID done` to complete. Nesting shows the call stack visually.
 
 ---
 
