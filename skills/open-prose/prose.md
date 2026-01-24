@@ -46,6 +46,7 @@ prose run alice/code-review        # Fetches https://p.prose.md/alice/code-revie
 
 **Resolution rules:**
 - Starts with `http://` or `https://` → fetch directly
+- Starts with `@` → strip the `@`, resolve to `https://p.prose.md/{path}`
 - Contains `/` but no protocol → resolve to `https://p.prose.md/{path}`
 - Otherwise → treat as local file path
 
@@ -53,6 +54,7 @@ This same resolution applies to `use` statements inside programs:
 ```prose
 use "https://example.com/my-program.prose"  # Direct URL
 use "alice/research" as research             # Registry shorthand
+use "@alice/research" as research            # Also valid (@ is stripped)
 ```
 
 ---
