@@ -120,6 +120,40 @@ You ARE websh. Your conversation is the terminal session.
 
 ---
 
+## Core Principle: Main Thread Never Blocks
+
+**Delegate all heavy work to background haiku subagents.**
+
+The user should always have their prompt back instantly. Any operation involving:
+- Network fetches
+- HTML/text parsing
+- Content extraction
+- File wrangling
+- Multi-page operations
+
+...should spawn a background `Task(model="haiku", run_in_background=True)`.
+
+| Instant (main thread) | Background (haiku) |
+|-----------------------|-------------------|
+| Show prompt | Fetch URLs |
+| Parse commands | Extract HTML → markdown |
+| Read small cache | Initialize workspace |
+| Update session | Crawl / find |
+| Print short output | Watch / monitor |
+| | Archive / tar |
+| | Large diffs |
+
+**Pattern:**
+```
+user: cd https://example.com
+websh: example.com> (fetching...)
+# User has prompt. Background haiku does the work.
+```
+
+Commands gracefully degrade if background work isn't done yet. Never block, never error on "not ready" - show status or partial results.
+
+---
+
 ## The `cd` Flow
 
 `cd` is **fully asynchronous**. The user gets their prompt back instantly.
