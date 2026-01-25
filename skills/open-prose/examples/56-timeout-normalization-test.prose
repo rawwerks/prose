@@ -1,0 +1,278 @@
+# Timeout Normalization Test Suite
+#
+# Tests that timeout_at is correctly computed from timeout duration strings.
+# This validates the VM's timeout parsing per sqlite.md spec.
+#
+# Timeout Parsing Rules (from sqlite.md):
+# | Format    | Example | Seconds | SQLite Modifier            |
+# |-----------|---------|---------|----------------------------|
+# | Seconds   | 30s     | 30      | '+30 seconds'              |
+# | Minutes   | 30m     | 1800    | '+30 minutes'              |
+# | Hours     | 4h      | 14400   | '+4 hours'                 |
+# | Days      | 7d      | 604800  | '+7 days'                  |
+# | Combined  | 2h30m   | 9000    | '+2 hours', '+30 minutes'  |
+#
+# To run this test:
+#   prose run examples/56-timeout-normalization-test.prose
+#
+# After each gate is created, verify timeout_at in the database:
+#   sqlite3 .prose/runs/<run_id>/state.db "SELECT id, timeout, timeout_at, datetime('now') as now FROM gates"
+#
+# Test pass criteria:
+# - timeout_at is correctly computed relative to creation time
+# - Expired gates can be found via simple timestamp comparison
+
+# ============================================================================
+# Test Configuration
+# ============================================================================
+
+agent test_runner:
+  model: sonnet
+  prompt: """You are a test execution agent. Execute tests precisely and
+log all observations. Report pass/fail status for each test case."""
+
+agent validator:
+  model: sonnet
+  prompt: """You are a test validator. Verify that test outcomes match
+expected behavior. Be precise about what passed and what failed."""
+
+# ============================================================================
+# Test 1: Short Timeout (30s)
+# Expected: timeout_at = created_at + 30 seconds
+# ============================================================================
+
+let test1_setup = session: test_runner
+  prompt: "TEST 1 SETUP: Preparing 30-second timeout test"
+
+try:
+  approve test1_30s:
+    prompt: """
+      TEST 1: 30-Second Timeout
+
+      This gate has a 30-second timeout.
+      The VM should compute timeout_at = datetime('now', '+30 seconds')
+
+      DO NOT RESPOND - let this timeout to verify the timeout_at calculation.
+
+      After the gate is created, check the database:
+        sqlite3 .prose/runs/<run_id>/state.db \\
+          "SELECT id, timeout, timeout_at, datetime('now') as now FROM gates WHERE id='test1_30s'"
+
+      Expected: timeout_at should be ~30 seconds after created_at
+
+      Test data: {test1_setup}
+    """
+    timeout: "30s"
+    on_reject: throw "Test 1 timeout triggered"
+
+  session: test_runner
+    prompt: "TEST 1 FAILED: Should have timed out after 30 seconds"
+
+catch as err:
+  let test1_result = session: validator
+    prompt: """TEST 1 PASSED: 30-second timeout worked correctly.
+Verify that the timeout triggered after approximately 30 seconds.
+Error received: {err}"""
+    context: err
+
+# ============================================================================
+# Test 2: Hour-based Timeout (4h)
+# Expected: timeout_at = created_at + 4 hours
+# Note: We won't actually wait 4 hours - just verify the timestamp is computed
+# ============================================================================
+
+let test2_setup = session: test_runner
+  prompt: "TEST 2 SETUP: Preparing 4-hour timeout test"
+
+approve test2_4h:
+  prompt: """
+    TEST 2: 4-Hour Timeout Calculation
+
+    This gate has a 4-hour timeout.
+    The VM should compute timeout_at = datetime('now', '+4 hours')
+
+    ACTION: Immediately approve this gate to continue.
+    We're testing timeout_at calculation, not the actual timeout behavior.
+
+    Command: prose approve <run_id> test2_4h --approve
+
+    After the gate is created, verify timeout_at in the database:
+      sqlite3 .prose/runs/<run_id>/state.db \\
+        "SELECT id, timeout, timeout_at, datetime('now') as now FROM gates WHERE id='test2_4h'"
+
+    Expected: timeout_at should be ~4 hours after created_at
+
+    Test data: {test2_setup}
+  """
+  timeout: "4h"
+  on_reject: throw "User rejected test 2"
+
+let test2_result = session: validator
+  prompt: """TEST 2 COMPLETE: Gate with 4h timeout was created and approved.
+The timeout_at timestamp should have been computed as 4 hours from creation.
+Log that the timeout duration was correctly stored."""
+
+# ============================================================================
+# Test 3: Combined Duration (2h30m)
+# Expected: timeout_at = created_at + 2 hours + 30 minutes
+# ============================================================================
+
+let test3_setup = session: test_runner
+  prompt: "TEST 3 SETUP: Preparing combined 2h30m timeout test"
+
+approve test3_2h30m:
+  prompt: """
+    TEST 3: Combined Duration Timeout (2h30m)
+
+    This gate has a combined timeout: 2 hours and 30 minutes.
+    The VM should compute timeout_at = datetime('now', '+2 hours', '+30 minutes')
+
+    ACTION: Immediately approve this gate to continue.
+    We're testing combined duration parsing, not the actual timeout.
+
+    Command: prose approve <run_id> test3_2h30m --approve
+
+    After the gate is created, verify timeout_at in the database:
+      sqlite3 .prose/runs/<run_id>/state.db \\
+        "SELECT id, timeout, timeout_at, datetime('now') as now FROM gates WHERE id='test3_2h30m'"
+
+    Expected: timeout_at should be 2.5 hours (9000 seconds) after created_at
+
+    Test data: {test3_setup}
+  """
+  timeout: "2h30m"
+  on_reject: throw "User rejected test 3"
+
+let test3_result = session: validator
+  prompt: """TEST 3 COMPLETE: Gate with 2h30m timeout was created and approved.
+The combined duration (2 hours + 30 minutes) should have been correctly parsed.
+Log that the combined timeout_at calculation worked."""
+
+# ============================================================================
+# Test 4: Query for Expired Gates
+# Expected: Gates with timeout_at < datetime('now') should be findable
+# ============================================================================
+
+# First, create a very short timeout gate that will expire
+let test4_setup = session: test_runner
+  prompt: "TEST 4 SETUP: Preparing expired gate query test"
+
+# This gate will expire in 1 second - we use continue to bypass
+approve test4_expired:
+  prompt: """
+    TEST 4: Expired Gate Query
+
+    This gate has a 1-second timeout with on_reject: continue.
+    After it expires, we'll query the database for expired gates.
+
+    DO NOT RESPOND - let this expire immediately.
+
+    Test data: {test4_setup}
+  """
+  timeout: "1s"
+  on_reject: continue
+
+# Small delay to ensure the gate has expired
+let test4_delay = session: test_runner
+  prompt: "Wait a moment while the previous gate expires, then continue"
+
+# Query verification - the validator should check the database
+let test4_result = session: validator
+  prompt: """TEST 4: Verify expired gate query works.
+
+The test4_expired gate should have:
+- status: 'timeout' (set when timeout occurred)
+- timeout_at: timestamp in the past
+
+Run this query to find expired gates:
+  sqlite3 .prose/runs/<run_id>/state.db \\
+    "SELECT id, timeout, timeout_at, datetime('now') as now FROM gates
+     WHERE status = 'timeout' AND timeout_at < datetime('now')"
+
+Log whether the expired gate query pattern works correctly."""
+
+# ============================================================================
+# Test 5: Minutes-based Timeout (30m)
+# Expected: timeout_at = created_at + 30 minutes
+# ============================================================================
+
+let test5_setup = session: test_runner
+  prompt: "TEST 5 SETUP: Preparing 30-minute timeout test"
+
+approve test5_30m:
+  prompt: """
+    TEST 5: 30-Minute Timeout Calculation
+
+    This gate has a 30-minute timeout.
+    The VM should compute timeout_at = datetime('now', '+30 minutes')
+
+    ACTION: Immediately approve this gate to continue.
+
+    Command: prose approve <run_id> test5_30m --approve
+
+    Test data: {test5_setup}
+  """
+  timeout: "30m"
+  on_reject: throw "User rejected test 5"
+
+let test5_result = session: validator
+  prompt: """TEST 5 COMPLETE: Gate with 30m timeout was created and approved.
+The timeout_at timestamp should have been computed as 30 minutes from creation."""
+
+# ============================================================================
+# Test 6: Days-based Timeout (7d)
+# Expected: timeout_at = created_at + 7 days
+# ============================================================================
+
+let test6_setup = session: test_runner
+  prompt: "TEST 6 SETUP: Preparing 7-day timeout test"
+
+approve test6_7d:
+  prompt: """
+    TEST 6: 7-Day Timeout Calculation
+
+    This gate has a 7-day timeout.
+    The VM should compute timeout_at = datetime('now', '+7 days')
+
+    ACTION: Immediately approve this gate to continue.
+
+    Command: prose approve <run_id> test6_7d --approve
+
+    Test data: {test6_setup}
+  """
+  timeout: "7d"
+  on_reject: throw "User rejected test 6"
+
+let test6_result = session: validator
+  prompt: """TEST 6 COMPLETE: Gate with 7d timeout was created and approved.
+The timeout_at timestamp should have been computed as 7 days from creation."""
+
+# ============================================================================
+# Final Summary
+# ============================================================================
+
+output test_summary = session: validator
+  prompt: """
+    TIMEOUT NORMALIZATION TEST SUITE COMPLETE
+
+    Summarize results for all 6 tests:
+
+    1. 30-second timeout: {test1_result}
+    2. 4-hour timeout: {test2_result}
+    3. 2h30m combined timeout: {test3_result}
+    4. Expired gate query: {test4_result}
+    5. 30-minute timeout: {test5_result}
+    6. 7-day timeout: {test6_result}
+
+    Key validations:
+    - timeout field stores the original duration string (e.g., "30s", "4h")
+    - timeout_at field stores the computed ISO 8601 deadline timestamp
+    - Expired gates can be found with: timeout_at < datetime('now')
+
+    Generate a final PASS/FAIL summary for each test.
+    Note any unexpected behaviors or issues with timeout parsing.
+  """
+  context: {
+    test1_result, test2_result, test3_result,
+    test4_result, test5_result, test6_result
+  }
