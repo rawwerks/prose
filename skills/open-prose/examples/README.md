@@ -119,7 +119,7 @@ These examples demonstrate workflows using OpenProse's full feature set.
 | `49-prose-run-retrospective.prose`           | Analyzes completed runs to extract learnings and improve .prose      |
 | `50-interactive-tutor.prose`                 | Demonstrates `input` primitive with interactive tutoring flow        |
 
-### Gates (51-57)
+### Gates (51-58)
 
 | File                                         | Description                                                          |
 | -------------------------------------------- | -------------------------------------------------------------------- |
@@ -130,6 +130,7 @@ These examples demonstrate workflows using OpenProse's full feature set.
 | `55-gate-retry-test.prose`                   | Tests retry behavior when gates are rejected                         |
 | `56-timeout-normalization-test.prose`        | Tests timeout triggers on_reject (timeout = rejection)               |
 | `57-audit-log-test.prose`                    | Tests gate_audit_log captures all events                             |
+| `58-gate-vs-input-comparison.prose`          | Demonstrates gate vs input: gate blocks, input allows discretion     |
 
 ## The Architect By Simulation Pattern
 
