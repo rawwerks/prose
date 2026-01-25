@@ -1,0 +1,137 @@
+# Approval Gate Research
+# Three parallel agents explore OpenProse from different angles,
+# then synthesize insights about how user approval fits in.
+
+agent language_analyst:
+  model: opus
+  prompt: """You are a programming language analyst.
+Your job is to deeply understand OpenProse as a language:
+- Syntax and grammar
+- Semantics and execution model
+- Design philosophy and principles
+- How it compares to other DSLs
+
+Focus on the LANGUAGE itself, not the implementation."""
+
+agent architecture_analyst:
+  model: opus
+  prompt: """You are a systems architecture analyst.
+Your job is to understand how OpenProse works as a system:
+- The LLM-as-VM model
+- State backends (filesystem, sqlite, in-context)
+- How the skill/plugin architecture works
+- Integration with Claude Code, OpenCode, etc.
+
+Focus on the ARCHITECTURE, not the syntax."""
+
+agent workflow_analyst:
+  model: opus
+  prompt: """You are a workflow and UX analyst.
+Your job is to understand how OpenProse is used in practice:
+- Read the examples to understand common patterns
+- What workflows does it enable?
+- What are the pain points it solves?
+- How do users interact with running programs?
+
+Focus on the USER EXPERIENCE, not the internals."""
+
+agent synthesizer:
+  model: opus
+  prompt: """You are a senior technical architect.
+Your job is to synthesize findings from multiple analysts
+and identify how a new feature fits into the existing system.
+
+Be specific. Cite evidence. Propose concrete improvements."""
+
+# Phase 1: Parallel exploration from three angles
+parallel:
+  language_findings = session: language_analyst
+    prompt: """Explore the OpenProse repository to understand it as a LANGUAGE.
+
+Read these files:
+- skills/open-prose/compiler.md (the full language spec)
+- skills/open-prose/prose.md (execution semantics)
+- CHANGELOG.md (language evolution)
+
+Then answer:
+1. What are the core primitives of the language?
+2. What makes it different from traditional programming languages?
+3. How does the "discretion" concept (**condition**) work?
+4. What is the philosophy behind the design?
+
+Finally: How does the new `approve` statement fit into the language design?
+Is it consistent with the philosophy? What tensions does it create?"""
+
+  architecture_findings = session: architecture_analyst
+    prompt: """Explore the OpenProse repository to understand its ARCHITECTURE.
+
+Read these files:
+- skills/open-prose/SKILL.md (entry point)
+- skills/open-prose/state/sqlite.md (sqlite backend)
+- skills/open-prose/state/filesystem.md (filesystem backend)
+- commands/ directory (CLI commands)
+
+Then answer:
+1. How does the "LLM-as-VM" model work?
+2. How is state persisted across sessions?
+3. What is the relationship between VM, subagents, and state?
+4. How do external integrations (Claude Code, etc.) work?
+
+Finally: How does the `gates` table in sqlite.md enable approval workflows?
+What architectural changes would make approval gates more robust?"""
+
+  workflow_findings = session: workflow_analyst
+    prompt: """Explore the OpenProse repository to understand USER WORKFLOWS.
+
+Read these files:
+- skills/open-prose/examples/README.md (example index)
+- skills/open-prose/examples/51-approval-gates.prose
+- skills/open-prose/examples/52-approval-gates-e2e-test.prose
+- At least 3 other examples of your choice
+
+Then answer:
+1. What are the common workflow patterns in OpenProse?
+2. Where do users currently need to make decisions during execution?
+3. How do existing features (input, choice, try/catch) handle user interaction?
+4. What workflows would benefit most from approval gates?
+
+Finally: Design 3 real-world scenarios where approval gates add significant value.
+Be specific about the workflow and why gates matter."""
+
+# Phase 2: Synthesis
+let synthesis = session: synthesizer
+  prompt: """You have findings from three analysts who explored OpenProse:
+
+## Language Analysis
+{language_findings}
+
+## Architecture Analysis
+{architecture_findings}
+
+## Workflow Analysis
+{workflow_findings}
+
+Synthesize these into a comprehensive assessment:
+
+1. **Fit Assessment**: How well do approval gates fit into OpenProse?
+   - Language consistency
+   - Architectural alignment
+   - Workflow value
+
+2. **Gaps Identified**: What's missing or could be improved?
+   - In the spec
+   - In the implementation
+   - In the examples
+
+3. **Recommendations**: Top 3 improvements to make approval gates better
+   - Be specific and actionable
+   - Cite evidence from the analyses
+
+4. **Future Directions**: How might approval gates evolve?
+   - Integration with other features
+   - New use cases enabled
+   - Potential extensions"""
+  context: { language_findings, architecture_findings, workflow_findings }
+
+# Final output
+output research_report = synthesis

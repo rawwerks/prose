@@ -1,8 +1,8 @@
 {
   "name": "prose",
   "owner": {
-    "name": "OpenProse",
-    "url": "https://github.com/openprose"
+    "name": "rawwerks",
+    "url": "https://github.com/rawwerks"
   },
   "plugins": [
     {
