@@ -222,6 +222,27 @@ CREATE TABLE IF NOT EXISTS imports (
     inputs_schema TEXT,  -- JSON
     outputs_schema TEXT  -- JSON
 );
+
+-- Approval gates (for approve statements)
+CREATE TABLE IF NOT EXISTS gates (
+    id TEXT PRIMARY KEY,              -- gate_id from the approve statement
+    run_id TEXT REFERENCES run(id),
+    execution_id INTEGER REFERENCES execution(id),
+    prompt TEXT,                      -- rendered prompt shown to user
+    allow TEXT DEFAULT '["user"]',    -- JSON array of allowed principals
+    timeout TEXT,                     -- timeout duration (e.g., "4h")
+    on_reject TEXT,                   -- action on rejection
+    status TEXT DEFAULT 'pending',    -- pending, approved, rejected, timeout
+    created_at TEXT DEFAULT (datetime('now')),
+    resolved_at TEXT,
+    resolved_by TEXT,                 -- principal who resolved (e.g., "user", "raymond")
+    resolution_comment TEXT,          -- optional comment from approver
+    metadata TEXT                     -- JSON for additional data
+);
+
+-- Index for querying pending gates
+CREATE INDEX IF NOT EXISTS idx_gates_status ON gates(status);
+CREATE INDEX IF NOT EXISTS idx_gates_run ON gates(run_id);
 ```
 
 ### Schema Conventions
@@ -462,6 +483,131 @@ VALUES (15, 'session "Risky"', 'completed', '{"attempt": 2}');
 ```
 
 **Append-only:** Each retry is a new record. Query for the latest status by statement_index.
+
+---
+
+## Approval Gates
+
+Approval gates (`approve gate_id:`) create deterministic user checkpoints. The `gates` table tracks pending and resolved gates.
+
+### Creating a Gate
+
+When the VM encounters an `approve` statement:
+
+```sql
+-- Insert pending gate
+INSERT INTO gates (id, run_id, execution_id, prompt, allow, timeout, on_reject, status)
+VALUES (
+  'production_deploy',
+  '20260125-125506-002755',
+  3,
+  'Ready to deploy to production. Changes: ...',
+  '["user"]',
+  '4h',
+  'throw "Deployment cancelled"',
+  'pending'
+);
+
+-- Also append to execution table
+INSERT INTO execution (statement_index, statement_text, status, metadata)
+VALUES (3, 'approve production_deploy:', 'pending', '{"gate_id": "production_deploy"}');
+```
+
+### Resolving a Gate
+
+Resolution can come from CLI, UI, or another process:
+
+```sql
+-- Approve the gate
+UPDATE gates SET
+  status = 'approved',
+  resolved_at = datetime('now'),
+  resolved_by = 'raymond',
+  resolution_comment = 'LGTM - reviewed changes'
+WHERE id = 'production_deploy' AND run_id = '20260125-125506-002755';
+
+-- Reject the gate
+UPDATE gates SET
+  status = 'rejected',
+  resolved_at = datetime('now'),
+  resolved_by = 'user',
+  resolution_comment = 'Need more testing first'
+WHERE id = 'production_deploy' AND run_id = '20260125-125506-002755';
+```
+
+### Querying Gates
+
+```sql
+-- Find all pending gates (for a CLI "prose gates" command)
+SELECT g.id, g.prompt, g.created_at, r.program_path
+FROM gates g
+JOIN run r ON g.run_id = r.id
+WHERE g.status = 'pending'
+ORDER BY g.created_at;
+
+-- Find gates for a specific run
+SELECT id, status, prompt, resolved_by, resolved_at
+FROM gates
+WHERE run_id = '20260125-125506-002755';
+
+-- Check if a run has any pending gates (for resume logic)
+SELECT COUNT(*) as pending_count
+FROM gates
+WHERE run_id = '20260125-125506-002755' AND status = 'pending';
+```
+
+### CLI Integration
+
+The sqlite backend enables a `prose approve` CLI command:
+
+```bash
+# List pending gates across all runs
+prose gates --pending
+
+# Approve a specific gate
+prose approve 20260125-125506-002755 production_deploy --approve --comment "LGTM"
+
+# Reject a gate
+prose approve 20260125-125506-002755 production_deploy --reject --reason "Need review"
+
+# These commands translate to SQL:
+sqlite3 .prose/runs/20260125-125506-002755/state.db "
+  UPDATE gates SET status='approved', resolved_at=datetime('now'), resolved_by='user'
+  WHERE id='production_deploy'
+"
+```
+
+### Timeout Handling
+
+For gates with timeouts, a background process or the VM itself can check:
+
+```sql
+-- Find gates that have timed out
+SELECT id, run_id, timeout, created_at
+FROM gates
+WHERE status = 'pending'
+  AND timeout IS NOT NULL
+  AND datetime(created_at, '+' ||
+    CASE
+      WHEN timeout LIKE '%h' THEN CAST(REPLACE(timeout, 'h', '') AS INTEGER) || ' hours'
+      WHEN timeout LIKE '%m' THEN CAST(REPLACE(timeout, 'm', '') AS INTEGER) || ' minutes'
+      WHEN timeout LIKE '%d' THEN CAST(REPLACE(timeout, 'd', '') AS INTEGER) || ' days'
+    END
+  ) < datetime('now');
+```
+
+### Gate Resolution from Suspended Run
+
+When a program is suspended at a gate and later resumed:
+
+```sql
+-- Check if gate was resolved while suspended
+SELECT status, resolved_by, resolution_comment
+FROM gates
+WHERE id = 'production_deploy' AND run_id = '20260125-125506-002755';
+```
+
+If `status = 'approved'`, the VM continues. If `status = 'rejected'`, execute `on_reject`. If still `pending`, continue waiting.
 
 ---
 

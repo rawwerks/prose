@@ -2878,7 +2878,9 @@ When the OpenProse VM encounters an `approve` statement:
 
 ### State Representation
 
-Gates are persisted in the state backend alongside run state:
+Gates are persisted in the state backend alongside run state.
+
+#### Filesystem Backend (default)
 
 ```
 .prose/runs/<run_id>/
@@ -2898,6 +2900,24 @@ Resolution record format:
   "comment": "LGTM"
 }
 ```
+
+#### SQLite Backend (recommended for production)
+
+With `--state="sqlite"`, gates are stored in the `gates` table:
+
+```sql
+SELECT id, status, prompt, resolved_by, resolved_at
+FROM gates
+WHERE run_id = '20260125-125506-002755';
+```
+
+The sqlite backend enables:
+- **CLI resolution**: `prose approve <run_id> <gate_id> --approve`
+- **Cross-session approval**: Resolve gates from a different terminal
+- **Audit queries**: `SELECT * FROM gates WHERE resolved_by = 'user'`
+- **Pending gate discovery**: `SELECT * FROM gates WHERE status = 'pending'`
+
+See `state/sqlite.md` for the full `gates` table schema and query patterns.
 
 ### Validation Rules
 
