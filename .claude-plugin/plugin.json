@@ -1,6 +1,6 @@
 {
-  "name": "open-prose",
-  "description": "A programming language for AI sessions - structures English into unambiguous control flow for multi-agent orchestration (rawwerks fork with approval gates)",
+  "name": "open-prose-rw",
+  "description": "OpenProse with approval gates - rawwerks fork with user approval checkpoints for deterministic workflows",
   "version": "0.9.0",
   "author": {
     "name": "rawwerks",
