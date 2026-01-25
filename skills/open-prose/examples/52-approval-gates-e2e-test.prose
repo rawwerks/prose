@@ -1,0 +1,368 @@
+# Approval Gates E2E Test Suite
+#
+# Comprehensive end-to-end tests for the approval gates feature.
+# This program exercises all approval gate behaviors:
+#
+# 1. User accepts (approve)
+# 2. User denies (reject with throw)
+# 3. User doesn't respond (timeout scenarios)
+# 4. Retry patterns (retry label, retry immediate)
+# 5. Continue behavior (bypass on reject)
+# 6. Custom session handler (session on reject)
+#
+# To run this test:
+#   prose run examples/52-approval-gates-e2e-test.prose
+#
+# The test will pause at each approval gate. Respond with:
+#   prose approve <run_id> <gate_id> --approve
+#   prose approve <run_id> <gate_id> --reject --reason "testing rejection"
+#
+# Or let timeouts expire to test timeout behavior.
+
+# ============================================================================
+# Test Configuration
+# ============================================================================
+
+agent test_runner:
+  model: sonnet
+  prompt: """You are a test execution agent. Execute tests precisely and
+log all observations. Report pass/fail status for each test case."""
+
+agent validator:
+  model: sonnet
+  prompt: """You are a test validator. Verify that test outcomes match
+expected behavior. Be precise about what passed and what failed."""
+
+# ============================================================================
+# Test 1: Basic Acceptance
+# Expected: User approves, execution continues normally
+# ============================================================================
+
+let test1_setup = session: test_runner
+  prompt: "TEST 1 SETUP: Initialize test data for basic acceptance test"
+
+approve test1_accept:
+  prompt: """
+    TEST 1: Basic Acceptance
+
+    This gate tests the happy path - user approval.
+
+    ACTION REQUIRED: Approve this gate to continue.
+    Command: prose approve <run_id> test1_accept --approve
+
+    Test data: {test1_setup}
+  """
+  allow: ["user"]
+
+let test1_result = session: test_runner
+  prompt: """TEST 1 PASSED: Gate was approved.
+Log that test1_accept was successfully approved and execution continued."""
+
+# ============================================================================
+# Test 2: Basic Rejection with Throw
+# Expected: User rejects, error is thrown and caught
+# ============================================================================
+
+let test2_setup = session: test_runner
+  prompt: "TEST 2 SETUP: Initialize test data for rejection test"
+
+try:
+  approve test2_reject:
+    prompt: """
+      TEST 2: Basic Rejection with Throw
+
+      This gate tests rejection behavior with the default throw action.
+
+      ACTION REQUIRED: Reject this gate to test error handling.
+      Command: prose approve <run_id> test2_reject --reject --reason "testing rejection"
+
+      Test data: {test2_setup}
+    """
+    on_reject: throw "Test 2 rejection confirmed"
+
+  # Should NOT reach here
+  session: test_runner
+    prompt: "TEST 2 FAILED: Should not have reached here after rejection"
+
+catch as err:
+  let test2_result = session: validator
+    prompt: """TEST 2 PASSED: Rejection was caught correctly.
+Verify error message contains "Test 2 rejection confirmed".
+Error received: {err}"""
+    context: err
+
+# ============================================================================
+# Test 3: Timeout with Throw (Short Timeout)
+# Expected: No response within timeout, throws error
+# ============================================================================
+
+let test3_setup = session: test_runner
+  prompt: "TEST 3 SETUP: Initialize test data for timeout test"
+
+try:
+  approve test3_timeout:
+    prompt: """
+      TEST 3: Timeout with Throw
+
+      This gate tests timeout behavior. DO NOT RESPOND.
+      The gate will timeout after 30 seconds and throw an error.
+
+      ACTION REQUIRED: Do nothing - let this timeout.
+      Wait 30 seconds...
+
+      Test data: {test3_setup}
+    """
+    timeout: "30s"
+    on_reject: throw "Test 3 timeout triggered"
+
+  # Should NOT reach here
+  session: test_runner
+    prompt: "TEST 3 FAILED: Should not have reached here after timeout"
+
+catch as err:
+  let test3_result = session: validator
+    prompt: """TEST 3 PASSED: Timeout triggered correctly.
+Verify error message contains "Test 3 timeout triggered".
+Error received: {err}"""
+    context: err
+
+# ============================================================================
+# Test 4: Timeout with Continue
+# Expected: No response within timeout, execution continues (bypass)
+# ============================================================================
+
+let test4_setup = session: test_runner
+  prompt: "TEST 4 SETUP: Initialize test data for timeout-continue test"
+
+approve test4_timeout_continue:
+  prompt: """
+    TEST 4: Timeout with Continue
+
+    This gate tests timeout with on_reject: continue behavior.
+    DO NOT RESPOND - let this timeout.
+
+    The gate should timeout after 30 seconds and continue execution
+    WITHOUT throwing an error.
+
+    ACTION REQUIRED: Do nothing - let this timeout.
+
+    Test data: {test4_setup}
+  """
+  timeout: "30s"
+  on_reject: continue
+
+let test4_result = session: validator
+  prompt: """TEST 4 PASSED: Timeout with continue worked correctly.
+Execution continued after timeout without throwing.
+Log that on_reject: continue bypassed the gate as expected."""
+
+# ============================================================================
+# Test 5: Retry with Label
+# Expected: User rejects, execution jumps back to label, user approves second time
+# ============================================================================
+
+let test5_attempt = 0
+
+@test5_retry_point
+let test5_attempt = test5_attempt + 1
+
+let test5_data = session: test_runner
+  prompt: "TEST 5: Generate data for attempt #{test5_attempt}"
+
+approve test5_retry:
+  prompt: """
+    TEST 5: Retry with Label (Attempt {test5_attempt})
+
+    This gate tests the retry label behavior.
+
+    If this is attempt 1:
+      ACTION: Reject to trigger retry
+      Command: prose approve <run_id> test5_retry --reject --reason "first attempt"
+
+    If this is attempt 2:
+      ACTION: Approve to complete the test
+      Command: prose approve <run_id> test5_retry --approve
+
+    Current attempt: {test5_attempt}
+    Data: {test5_data}
+  """
+  on_reject: retry test5_retry_point
+
+let test5_result = session: validator
+  prompt: """TEST 5 PASSED: Retry with label worked correctly.
+Final attempt number should be 2, was: {test5_attempt}
+Verify that retry jumped back to the label and regenerated data."""
+  context: { test5_attempt, test5_data }
+
+# ============================================================================
+# Test 6: Rejection with Custom Session Handler
+# Expected: User rejects, custom session handles the rejection
+# ============================================================================
+
+let test6_setup = session: test_runner
+  prompt: "TEST 6 SETUP: Initialize test data for custom handler test"
+
+let test6_proposal = session: test_runner
+  prompt: "Generate a proposal that will be rejected for testing"
+
+approve test6_custom_handler:
+  prompt: """
+    TEST 6: Custom Session Handler on Reject
+
+    This gate tests the session handler for rejection.
+
+    ACTION REQUIRED: Reject this gate to trigger custom handler.
+    Command: prose approve <run_id> test6_custom_handler --reject --reason "testing custom handler"
+
+    Proposal: {test6_proposal}
+  """
+  on_reject: session """
+    The user rejected the proposal. This is the custom rejection handler.
+
+    Original proposal was: {test6_proposal}
+
+    Log that the custom session handler was invoked successfully.
+    This message confirms TEST 6 PASSED.
+  """
+
+let test6_result = session: validator
+  prompt: "TEST 6 COMPLETE: Custom session handler test finished"
+
+# ============================================================================
+# Test 7: String Shorthand for Throw
+# Expected: User rejects, string is used as throw message
+# ============================================================================
+
+let test7_setup = session: test_runner
+  prompt: "TEST 7 SETUP: Initialize test data for string shorthand test"
+
+try:
+  approve test7_string_shorthand:
+    prompt: """
+      TEST 7: String Shorthand for on_reject
+
+      This gate tests the string shorthand syntax for on_reject.
+      on_reject: "message" should behave like on_reject: throw "message"
+
+      ACTION REQUIRED: Reject this gate.
+      Command: prose approve <run_id> test7_string_shorthand --reject
+    """
+    on_reject: "Test 7 string shorthand rejection"
+
+  session: test_runner
+    prompt: "TEST 7 FAILED: Should not have reached here"
+
+catch as err:
+  let test7_result = session: validator
+    prompt: """TEST 7 PASSED: String shorthand worked correctly.
+Verify error contains "Test 7 string shorthand rejection".
+Error: {err}"""
+    context: err
+
+# ============================================================================
+# Test 8: Approval Gate Inside Parallel Block
+# Expected: One branch pauses for approval, others continue
+# ============================================================================
+
+let test8_setup = session: test_runner
+  prompt: "TEST 8 SETUP: Initialize parallel test. Recording start time."
+
+parallel:
+  branch_a = do:
+    approve test8_parallel_gate:
+      prompt: """
+        TEST 8: Approval Inside Parallel Block (Branch A)
+
+        This branch has an approval gate. Other branches should
+        continue executing while this one waits.
+
+        ACTION REQUIRED: Wait 10 seconds, then approve.
+        Command: prose approve <run_id> test8_parallel_gate --approve
+      """
+    session: test_runner
+      prompt: "Branch A completed after approval"
+
+  branch_b = session: test_runner
+    prompt: "Branch B executing immediately (no approval needed)"
+
+  branch_c = session: test_runner
+    prompt: "Branch C executing immediately (no approval needed)"
+
+let test8_result = session: validator
+  prompt: """TEST 8 PASSED: Parallel approval test completed.
+Verify all three branches completed:
+- Branch A (with approval): {branch_a}
+- Branch B (immediate): {branch_b}
+- Branch C (immediate): {branch_c}
+
+Branch B and C should have completed while A was waiting for approval."""
+  context: { branch_a, branch_b, branch_c }
+
+# ============================================================================
+# Test 9: Approval Gate Inside Loop with Continue
+# Expected: Some items approved, some skipped via continue
+# ============================================================================
+
+let test9_items = ["item-1", "item-2", "item-3"]
+let test9_processed = []
+
+for item, index in test9_items:
+  approve test9_loop_gate:
+    prompt: """
+      TEST 9: Approval Inside Loop (Item {index + 1}/3)
+
+      Processing: {item}
+
+      ACTION:
+      - For item-1: Approve (to process)
+      - For item-2: Reject (to skip via continue)
+      - For item-3: Approve (to process)
+
+      Commands:
+        prose approve <run_id> test9_loop_gate --approve
+        prose approve <run_id> test9_loop_gate --reject
+    """
+    on_reject: continue
+
+  let result = session: test_runner
+    prompt: "Processing {item} after approval"
+    context: item
+
+  let test9_processed = test9_processed + [item]
+
+let test9_result = session: validator
+  prompt: """TEST 9 PASSED: Loop with approval gates completed.
+Items processed: {test9_processed}
+Expected: ["item-1", "item-3"] (item-2 should be skipped)
+
+Verify that on_reject: continue properly skipped item-2."""
+  context: test9_processed
+
+# ============================================================================
+# Final Summary
+# ============================================================================
+
+output test_summary = session: validator
+  prompt: """
+    APPROVAL GATES E2E TEST SUITE COMPLETE
+
+    Summarize results for all 9 tests:
+
+    1. Basic Acceptance: {test1_result}
+    2. Basic Rejection (throw): {test2_result}
+    3. Timeout (throw): {test3_result}
+    4. Timeout (continue): {test4_result}
+    5. Retry with Label: {test5_result}
+    6. Custom Session Handler: {test6_result}
+    7. String Shorthand: {test7_result}
+    8. Parallel Block: {test8_result}
+    9. Loop with Continue: {test9_result}
+
+    Generate a final PASS/FAIL summary for each test.
+    Note any unexpected behaviors or issues.
+  """
+  context: {
+    test1_result, test2_result, test3_result,
+    test4_result, test5_result, test6_result,
+    test7_result, test8_result, test9_result
+  }

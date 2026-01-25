@@ -1,0 +1,166 @@
+# Approval Gates
+# User approval checkpoints for critical workflow decisions
+#
+# Approval gates create deterministic user checkpoints that cannot be
+# bypassed by agents. Unlike `input`, `approve` gates require explicit
+# external resolution before execution continues.
+
+# -----------------------------------------------------------------------------
+# Example 1: Basic Deployment Approval
+# -----------------------------------------------------------------------------
+
+let diff = session "Generate a summary of changes since the last deployment"
+
+approve production_deploy:
+  prompt: """
+    Ready to deploy to production.
+
+    Changes:
+    {diff}
+
+    Approve deployment?
+  """
+  allow: ["user"]
+  timeout: "4h"
+  on_reject: throw "Deployment cancelled by user"
+
+session "Deploy to production"
+
+# -----------------------------------------------------------------------------
+# Example 2: Retry Pattern for Configuration
+# -----------------------------------------------------------------------------
+
+@generate_config
+let config = session "Generate optimal configuration based on current environment"
+
+approve config_valid:
+  prompt: """
+    Generated configuration:
+    {config}
+
+    Is this configuration correct?
+  """
+  on_reject: retry generate_config
+
+session "Apply the approved configuration"
+  context: config
+
+# -----------------------------------------------------------------------------
+# Example 3: Optional Review with Timeout
+# -----------------------------------------------------------------------------
+
+let analysis = session "Perform deep analysis of the codebase"
+
+approve detailed_review:
+  prompt: "Would you like to review detailed findings before continuing?"
+  timeout: "10m"
+  on_reject: continue  # Proceed without review if no response
+
+session "Generate summary report"
+  context: analysis
+
+# -----------------------------------------------------------------------------
+# Example 4: Chained Approvals
+# -----------------------------------------------------------------------------
+
+# First approval: review the plan
+let plan = session "Create detailed implementation plan"
+
+approve plan_review:
+  prompt: "Review and approve this implementation plan? {plan}"
+  on_reject: throw "Plan rejected"
+
+# Execute the approved plan
+let result = session "Execute the implementation plan"
+  context: plan
+
+# Second approval: review results before delivery
+approve result_review:
+  prompt: "Approve these results for delivery? {result}"
+  on_reject: session "User rejected results. Discuss what improvements are needed."
+
+session "Package and deliver the approved results"
+  context: result
+
+# -----------------------------------------------------------------------------
+# Example 5: With Error Handling
+# -----------------------------------------------------------------------------
+
+try:
+  approve risky_operation:
+    prompt: """
+      This operation will modify production data.
+
+      Are you sure you want to continue?
+    """
+    timeout: "5m"
+    on_reject: throw "Operation cancelled by user"
+
+  session "Perform the risky operation"
+
+catch as err:
+  session "Handle the cancellation or failure gracefully"
+    context: err
+
+finally:
+  session "Log the operation attempt for audit purposes"
+
+# -----------------------------------------------------------------------------
+# Example 6: Inside Parallel Blocks
+# -----------------------------------------------------------------------------
+
+parallel:
+  # This branch pauses for approval while others continue
+  approved_work = do:
+    approve branch_a_gate:
+      prompt: "Approve executing branch A (high-cost operation)?"
+    session "Execute expensive branch A operation"
+
+  # This branch runs independently without approval
+  auto_work = session "Execute branch B (low-cost, no approval needed)"
+
+  # Another independent branch
+  background_work = session "Execute branch C (background task)"
+
+# All branches complete, combine results
+session "Combine results from all parallel branches"
+  context: { approved_work, auto_work, background_work }
+
+# -----------------------------------------------------------------------------
+# Example 7: Inside Loops with Per-Item Approval
+# -----------------------------------------------------------------------------
+
+let items = ["server-1", "server-2", "server-3"]
+
+for item in items:
+  approve item_gate:
+    prompt: "Restart {item}?"
+    on_reject: continue  # Skip this server if rejected
+
+  session "Restart {item} and verify it comes back online"
+
+session "All approved servers have been restarted"
+
+# -----------------------------------------------------------------------------
+# Example 8: Custom Rejection Handler
+# -----------------------------------------------------------------------------
+
+let proposal = session "Draft a proposal for the new feature"
+
+approve proposal_review:
+  prompt: """
+    Review this proposal:
+
+    {proposal}
+
+    Approve to proceed with implementation?
+  """
+  on_reject: session """
+    The user rejected the proposal.
+
+    Ask them what specific changes they'd like to see,
+    then revise the proposal accordingly.
+  """
+
+session "Begin implementation based on the approved proposal"
+  context: proposal

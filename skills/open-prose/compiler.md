@@ -75,10 +75,11 @@ If a construct is ambiguous or non-obvious, it should be flagged or transformed 
 18. [Error Handling](#error-handling)
 19. [Choice Blocks](#choice-blocks)
 20. [Conditional Statements](#conditional-statements)
-21. [Execution Model](#execution-model)
-22. [Validation Rules](#validation-rules)
-23. [Examples](#examples)
-24. [Future Features](#future-features)
+21. [Approval Gates](#approval-gates)
+22. [Execution Model](#execution-model)
+23. [Validation Rules](#validation-rules)
+24. [Examples](#examples)
+25. [Future Features](#future-features)
 
 ---
 
@@ -151,6 +152,7 @@ The following features are implemented:
 | If/elif/else           | Implemented | `if **condition**:` conditional branching      |
 | Persistent agents      | Implemented | `persist: true` or `persist: project`          |
 | Resume statement       | Implemented | `resume: agent` to continue with memory        |
+| Approval gates         | Implemented | `approve gate:` with prompt, allow, timeout, on_reject |
 
 ---
 
@@ -2591,6 +2593,344 @@ discretion ::= "**" text "**" | "***" text "***"
 
 ---
 
+## Approval Gates
+
+Approval gates create deterministic user checkpoints that cannot be bypassed by agents running within the OpenProse VM. Unlike `input` statements (which may be answerable by the AI), `approve` gates require explicit external resolution before execution can continue.
+
+**Key insight**: We use "user" rather than "human" because:
+- We can't cryptographically prove the approver is human
+- The critical property is that agents running *within* OpenProse cannot self-approve
+- If another agent is running the OpenProse system, that agent IS the user from OpenProse's frame of reference
+- It's about the **trust boundary**, not biology
+
+### Syntax
+
+```prose
+approve gate_id:
+  prompt: "Description of what is being approved"
+  allow: ["user"]
+  timeout: "4h"
+  on_reject: throw "Approval denied"
+```
+
+### Properties
+
+| Property    | Required | Default              | Description                                      |
+| ----------- | -------- | -------------------- | ------------------------------------------------ |
+| `prompt`    | Yes      | —                    | Message shown to the user describing the gate    |
+| `allow`     | No       | `["user"]`           | List of principals who can approve               |
+| `timeout`   | No       | None                 | Maximum time to wait (e.g., "4h", "30m", "7d")   |
+| `on_reject` | No       | `throw "Rejected"`   | Action to take when the gate is rejected         |
+
+### The `prompt` Property
+
+The prompt is shown to the user when the gate is reached. It should clearly describe:
+- What is about to happen
+- What the user is approving
+- Any relevant context
+
+```prose
+approve deploy_production:
+  prompt: """
+    Ready to deploy to production.
+
+    Changes:
+    {diff_summary}
+
+    Tests: {test_status}
+
+    Approve deployment?
+  """
+```
+
+String interpolation with `{variable}` is supported in the prompt.
+
+### The `allow` Property
+
+Specifies which principals can resolve the gate. In the LLM-as-VM model, the practical options are:
+
+- `["user"]` — Only the user running the OpenProse session (default)
+- `["user", "ops-team"]` — Named groups from `.prose/policy` (if configured)
+
+The VM enforces that agents within the session cannot self-approve.
+
+### The `timeout` Property
+
+Specifies how long to wait for approval before taking the `on_reject` action:
+
+```prose
+approve quick_check:
+  prompt: "Continue with default settings?"
+  timeout: "5m"
+  on_reject: continue  # Use defaults if no response
+```
+
+Timeout format: `"Ns"` (seconds), `"Nm"` (minutes), `"Nh"` (hours), `"Nd"` (days).
+
+### The `on_reject` Property
+
+Specifies what happens when the gate is rejected (or times out). Five behaviors are supported:
+
+#### 1. `throw` (default)
+
+Raises an error that can be caught by `try/catch`:
+
+```prose
+approve deploy:
+  prompt: "Deploy to production?"
+  on_reject: throw "Deployment cancelled by user"
+
+# Or with default message:
+approve deploy:
+  prompt: "Deploy to production?"
+  on_reject: throw  # Throws "Rejected"
+```
+
+#### 2. `retry` or `retry label`
+
+Jumps back to retry the workflow. Can specify a label to retry from:
+
+```prose
+@get_config
+let config = session "Generate configuration"
+
+approve config_review:
+  prompt: "Accept this configuration? {config}"
+  on_reject: retry get_config  # Go back to regenerate
+```
+
+Without a label, retries the immediately preceding statement.
+
+#### 3. `continue`
+
+**Warning**: Bypasses the approval and continues execution. Use sparingly—this is logged for audit purposes.
+
+```prose
+approve optional_review:
+  prompt: "Review the output before proceeding?"
+  timeout: "10m"
+  on_reject: continue  # Skip review if no response
+```
+
+#### 4. `session "prompt"`
+
+Spawns a custom error-handling session:
+
+```prose
+approve deploy:
+  prompt: "Deploy to production?"
+  on_reject: session "The user rejected deployment. Ask why and suggest alternatives."
+```
+
+#### 5. String shorthand
+
+A plain string is equivalent to `throw "string"`:
+
+```prose
+approve deploy:
+  prompt: "Deploy?"
+  on_reject: "User cancelled deployment"  # Same as: throw "User cancelled deployment"
+```
+
+### Examples
+
+#### Basic Deployment Approval
+
+```prose
+let diff = session "Generate deployment diff"
+
+approve production_deploy:
+  prompt: """
+    Ready to deploy to production.
+    Changes: {diff}
+    Approve?
+  """
+  allow: ["user"]
+  timeout: "4h"
+  on_reject: throw "Deployment cancelled"
+
+session "Deploy to production"
+```
+
+#### Retry Pattern for Configuration
+
+```prose
+@generate_config
+let config = session "Generate optimal configuration"
+
+approve config_valid:
+  prompt: """
+    Generated configuration:
+    {config}
+
+    Is this correct?
+  """
+  on_reject: retry generate_config
+
+session "Apply configuration"
+  context: config
+```
+
+#### Optional Review with Timeout
+
+```prose
+let analysis = session "Analyze the codebase"
+
+approve detailed_review:
+  prompt: "Review detailed findings before continuing?"
+  timeout: "10m"
+  on_reject: continue  # Proceed without review if timeout
+
+session "Generate summary report"
+  context: analysis
+```
+
+#### Chained Approvals
+
+```prose
+# First approval: review plan
+let plan = session "Create implementation plan"
+
+approve plan_review:
+  prompt: "Review and approve this plan? {plan}"
+  on_reject: throw "Plan rejected"
+
+# Execute the plan
+let result = session "Execute the plan"
+  context: plan
+
+# Second approval: review results
+approve result_review:
+  prompt: "Approve these results for delivery? {result}"
+  on_reject: session "User rejected results. Discuss improvements."
+```
+
+#### With Error Handling
+
+```prose
+try:
+  approve risky_operation:
+    prompt: "This will modify production data. Continue?"
+    timeout: "5m"
+    on_reject: throw "Operation cancelled"
+
+  session "Perform risky operation"
+catch as err:
+  session "Operation was cancelled or failed: {err}"
+finally:
+  session "Log the attempt"
+```
+
+#### Inside Parallel Blocks
+
+```prose
+parallel:
+  # This branch pauses for approval
+  approved_work = do:
+    approve branch_a:
+      prompt: "Approve branch A?"
+    session "Execute branch A"
+
+  # This branch runs independently
+  auto_work = session "Execute branch B (no approval needed)"
+```
+
+The approval gate pauses only its branch; other parallel branches continue.
+
+#### Inside Loops
+
+```prose
+for item in items:
+  approve item_check:
+    prompt: "Process {item}?"
+    on_reject: continue  # Skip this item
+
+  session "Process {item}"
+```
+
+Each iteration gets its own gate instance (gate IDs are scoped by iteration).
+
+### Execution Semantics
+
+When the OpenProse VM encounters an `approve` statement:
+
+1. **Create Gate Record**: Write a pending gate to the state backend with:
+   - `gate_id`: The identifier from the statement
+   - `prompt`: The rendered prompt text
+   - `allow`: The list of allowed principals
+   - `timeout`: The timeout duration (if specified)
+   - `created_at`: Timestamp
+
+2. **Emit Event**: Signal "awaiting approval" to the harness/UI
+
+3. **Block Execution**: Halt the program counter at this statement
+
+4. **Wait for Resolution**: The gate must be resolved externally via:
+   - CLI: `prose approve <run_id> <gate_id> --approve`
+   - CLI: `prose approve <run_id> <gate_id> --reject --reason "..."`
+   - UI: Approval button in the harness interface
+
+5. **On Approval**: Advance to the next statement
+
+6. **On Rejection**: Execute the `on_reject` action
+
+7. **On Timeout**: Treat as rejection, execute `on_reject` action
+
+### State Representation
+
+Gates are persisted in the state backend alongside run state:
+
+```
+.prose/runs/<run_id>/
+  state.json
+  gates/
+    <gate_id>.pending.json     # While awaiting
+    <gate_id>.resolved.json    # After resolution
+```
+
+Resolution record format:
+```json
+{
+  "gate_id": "production_deploy",
+  "decision": "approve",
+  "principal": "raymond",
+  "timestamp": "2025-01-25T12:00:00Z",
+  "comment": "LGTM"
+}
+```
+
+### Validation Rules
+
+| Check                       | Severity | Message                                    |
+| --------------------------- | -------- | ------------------------------------------ |
+| Missing prompt              | Error    | Approval gate must have a prompt           |
+| Empty gate_id               | Error    | Approval gate must have an identifier      |
+| Invalid on_reject action    | Error    | on_reject must be throw/retry/continue/session/string |
+| Retry label not found       | Error    | Label "X" not found for retry              |
+| Duplicate gate_id in scope  | Warning  | Gate ID may shadow outer scope             |
+| `continue` without timeout  | Warning  | `on_reject: continue` without timeout may never prompt |
+
+### Syntax Reference
+
+```
+approve_statement ::= "approve" IDENTIFIER ":" NEWLINE INDENT approve_property+ DEDENT
+
+approve_property ::= "prompt" ":" string
+                   | "allow" ":" "[" string_list "]"
+                   | "timeout" ":" string
+                   | "on_reject" ":" on_reject_action
+
+on_reject_action ::= "throw" string?
+                   | "retry" IDENTIFIER?
+                   | "continue"
+                   | "session" string
+                   | string
+
+string_list ::= string ( "," string )*
+```
+
+---
+
 ## Execution Model
 
 OpenProse uses a two-phase execution model.
@@ -2854,8 +3194,8 @@ program     → statement* EOF
 statement   → useStatement | inputDecl | agentDef | session | resumeStmt
             | letBinding | constBinding | assignment | outputBinding
             | parallelBlock | repeatBlock | forEachBlock | loopBlock
-            | tryBlock | choiceBlock | ifStatement | doBlock | blockDef
-            | throwStatement | comment
+            | tryBlock | choiceBlock | ifStatement | approveStatement
+            | doBlock | blockDef | throwStatement | comment
 
 # Program Composition
 useStatement → "use" string ( "as" IDENTIFIER )?
@@ -2902,6 +3242,15 @@ choiceOption → "option" string ":" NEWLINE INDENT statement+ DEDENT
 ifStatement → "if" discretion ":" NEWLINE INDENT statement+ DEDENT elifClause* elseClause?
 elifClause  → "elif" discretion ":" NEWLINE INDENT statement+ DEDENT
 elseClause  → "else" ":" NEWLINE INDENT statement+ DEDENT
+
+# Approval Gates
+approveStatement → "approve" IDENTIFIER ":" NEWLINE INDENT approveProperty+ DEDENT
+approveProperty → "prompt" ":" string
+                | "allow" ":" "[" stringList "]"
+                | "timeout" ":" string
+                | "on_reject" ":" onRejectAction
+onRejectAction → "throw" string? | "retry" IDENTIFIER? | "continue" | "session" string | string
+stringList  → string ( "," string )*
 
 # Composition
 doBlock     → "do" ( ":" NEWLINE INDENT statement* DEDENT | IDENTIFIER args? )

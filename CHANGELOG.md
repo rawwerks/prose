@@ -5,6 +5,17 @@ All notable changes to OpenProse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Approval Gates** (`approve gate:`): Deterministic user checkpoints that cannot be bypassed by agents
+  - `prompt`: Message shown to user describing what is being approved
+  - `allow`: List of principals who can approve (default: `["user"]`)
+  - `timeout`: Maximum wait time (e.g., "4h", "30m")
+  - `on_reject`: Action on rejection - `throw`, `retry`, `continue`, `session "prompt"`, or string shorthand
+  - New example: `51-approval-gates.prose` demonstrating 8 usage patterns
+
 ## [0.8.1] - 2025-01-23
 
 ### Changed

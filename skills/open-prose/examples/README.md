@@ -119,6 +119,13 @@ These examples demonstrate workflows using OpenProse's full feature set.
 | `49-prose-run-retrospective.prose`           | Analyzes completed runs to extract learnings and improve .prose      |
 | `50-interactive-tutor.prose`                 | Demonstrates `input` primitive with interactive tutoring flow        |
 
+### Approval Gates (51-52)
+
+| File                              | Description                                              |
+| --------------------------------- | -------------------------------------------------------- |
+| `51-approval-gates.prose`         | User approval checkpoints with prompt, timeout, on_reject |
+| `52-approval-gates-e2e-test.prose`| E2E test suite: accept, reject, timeout, retry scenarios |
+
 ## The Architect By Simulation Pattern
 
 The architect-by-simulation pattern is for designing systems by "implementing" them through reasoning. Instead of writing code, each phase produces specification documents that the next phase builds upon.
@@ -367,6 +374,16 @@ choice **criteria**:
     session "..."
   option "Label B":
     session "..."
+```
+
+### Approval Gates
+
+```prose
+approve gate_id:
+  prompt: "Approve this action?"
+  allow: ["user"]
+  timeout: "4h"
+  on_reject: throw "Rejected"
 ```
 
 ### Blocks
