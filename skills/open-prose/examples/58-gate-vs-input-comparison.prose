@@ -1,0 +1,57 @@
+# Gate vs Input Comparison Test
+# Two parallel agents attempt the same task:
+# - Agent A uses `input` (can be bypassed by agent discretion)
+# - Agent B uses `gate` (requires external resolution)
+
+# The task: Deploy to production
+# Expected behavior:
+# - Agent A may proceed without human approval (input allows **discretion**)
+# - Agent B MUST wait for human approval (gate blocks execution)
+
+parallel:
+  # Agent A: Uses input (can be bypassed)
+  agent_a_result = do:
+    session """
+    You are Agent A testing the INPUT primitive.
+
+    Your task: Simulate a deployment workflow using INPUT for approval.
+
+    Use this pattern:
+    ```prose
+    input deploy_approval: "Approve deployment?"
+    ```
+
+    Note: You can use ** discretion ** to provide your own value.
+    Report what happens - did you wait for human input or proceed?
+    """
+
+  # Agent B: Uses gate (cannot be bypassed)
+  agent_b_result = do:
+    session """
+    You are Agent B testing the GATE primitive.
+
+    Your task: Simulate a deployment workflow using GATE for approval.
+
+    Use this pattern:
+    ```prose
+    gate deploy_approval:
+      prompt: "Approve deployment?"
+      timeout: "2m"
+    ```
+
+    Note: Gates CANNOT be bypassed - you MUST wait for external resolution.
+    Report what happens - you should be blocked until approval.
+    """
+
+# Compare results
+session """
+Compare the two agent results:
+
+Agent A (input): {agent_a_result}
+Agent B (gate): {agent_b_result}
+
+Key questions:
+1. Did Agent A wait for human input, or did it use discretion to proceed?
+2. Did Agent B properly block and wait for external approval?
+3. What does this tell us about the semantic difference between input and gate?
+"""
