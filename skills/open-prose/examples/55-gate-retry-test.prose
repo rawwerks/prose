@@ -1,0 +1,34 @@
+# Gate Retry Test
+# Tests the retry behavior when gates are rejected
+
+# Scenario: User rejects initially but approves on retry
+# This simulates a "are you sure?" confirmation pattern
+
+session "Preparing to delete important data..."
+
+gate confirm_delete:
+  prompt: """
+DANGEROUS OPERATION: Delete all project files?
+
+This will permanently delete:
+- All source code
+- All configuration files
+- All test data
+
+Reject to cancel, or Approve to proceed.
+(If you reject, you'll be asked again to confirm your choice)
+"""
+  timeout: "5m"
+  on_reject: retry
+
+session "User confirmed deletion - proceeding with delete operation"
+
+# Multi-retry scenario
+# Gate keeps retrying until approved
+
+gate persistent_gate:
+  prompt: "This gate will keep asking until you approve. Approve to continue."
+  timeout: "1m"
+  on_reject: retry
+
+session "Finally approved! Persistent gate test complete."

@@ -75,11 +75,11 @@ If a construct is ambiguous or non-obvious, it should be flagged or transformed 
 18. [Error Handling](#error-handling)
 19. [Choice Blocks](#choice-blocks)
 20. [Conditional Statements](#conditional-statements)
-21. [Approval Gates](#approval-gates)
+21. [Gates](#gates)
 22. [Execution Model](#execution-model)
-23. [Validation Rules](#validation-rules)
-24. [Examples](#examples)
-25. [Future Features](#future-features)
+22. [Validation Rules](#validation-rules)
+23. [Examples](#examples)
+24. [Future Features](#future-features)
 
 ---
 
@@ -152,7 +152,7 @@ The following features are implemented:
 | If/elif/else           | Implemented | `if **condition**:` conditional branching      |
 | Persistent agents      | Implemented | `persist: true` or `persist: project`          |
 | Resume statement       | Implemented | `resume: agent` to continue with memory        |
-| Approval gates         | Implemented | `approve gate:` with prompt, allow, timeout, on_reject |
+| Gates                  | Implemented | `gate id:` with prompt, allow, timeout, on_reject |
 
 ---
 
@@ -428,6 +428,29 @@ Inputs:
 | Empty description      | Warning  | Consider adding a description        |
 | Duplicate input name   | Error    | Input already declared               |
 | Input after executable | Error    | Inputs must be declared before executable statements |
+
+### Gate vs Input
+
+Use `input` when you need **data** from the user:
+```prose
+input topic: "What should we research?"
+```
+
+Use `gate` when you need **approval** that agents cannot bypass:
+```prose
+gate deploy:
+  prompt: "Deploy to production?"
+  timeout: "5m"
+  on_reject: throw
+```
+
+Key differences:
+- `input` binds a value; `gate` does not (it's a checkpoint)
+- `input` can use `**` discretion (agent can provide); `gate` cannot (requires external resolution)
+- `gate` has timeout/on_reject; `input` does not
+- Agents can provide `input` values; agents **cannot** resolve `gate`s
+
+See the [Gates](#gates) section for full gate syntax and semantics.
 
 ---
 
@@ -2593,361 +2616,171 @@ discretion ::= "**" text "**" | "***" text "***"
 
 ---
 
-## Approval Gates
+## Gates
 
-Approval gates create deterministic user checkpoints that cannot be bypassed by agents running within the OpenProse VM. Unlike `input` statements (which may be answerable by the AI), `approve` gates require explicit external resolution before execution can continue.
-
-**Key insight**: We use "user" rather than "human" because:
-- We can't cryptographically prove the approver is human
-- The critical property is that agents running *within* OpenProse cannot self-approve
-- If another agent is running the OpenProse system, that agent IS the user from OpenProse's frame of reference
-- It's about the **trust boundary**, not biology
+Gates are trust boundaries that require external resolution. Unlike `input` (which agents can provide), gates **must** be resolved by an external principal (typically the user). Gates enable human-in-the-loop workflows for critical decisions.
 
 ### Syntax
 
 ```prose
-approve gate_id:
-  prompt: "Description of what is being approved"
+gate gate_id:
+  prompt: "Question for the approver"
   allow: ["user"]
-  timeout: "4h"
-  on_reject: throw "Approval denied"
+  timeout: "5m"
+  on_reject: throw "Deployment rejected"
 ```
 
 ### Properties
 
-| Property    | Required | Default              | Description                                      |
-| ----------- | -------- | -------------------- | ------------------------------------------------ |
-| `prompt`    | Yes      | —                    | Message shown to the user describing the gate    |
-| `allow`     | No       | `["user"]`           | List of principals who can approve               |
-| `timeout`   | No       | None                 | Maximum time to wait (e.g., "4h", "30m", "7d")   |
-| `on_reject` | No       | `throw "Rejected"`   | Action to take when the gate is rejected         |
+| Property     | Required | Default       | Description                                        |
+| ------------ | -------- | ------------- | -------------------------------------------------- |
+| `prompt`     | Yes      | -             | The question/message shown to the approver         |
+| `allow`      | No       | `["user"]`    | Who can resolve this gate (forward-compatible)     |
+| `timeout`    | No       | `"30m"`       | How long to wait before auto-reject                |
+| `on_reject`  | No       | `throw`       | Action on rejection: throw, retry, continue, or session |
 
-### The `prompt` Property
+### Timeout Behavior
 
-The prompt is shown to the user when the gate is reached. It should clearly describe:
-- What is about to happen
-- What the user is approving
-- Any relevant context
+When a gate's timeout expires:
+1. Status changes to `timeout`
+2. `on_reject` action is triggered (default: `throw`)
+3. Gate cannot be approved after timeout
 
-```prose
-approve deploy_production:
-  prompt: """
-    Ready to deploy to production.
+**Timeout = rejection.** There is no auto-approve on timeout. This is a safety feature—if no human responds, the gate fails closed.
 
-    Changes:
-    {diff_summary}
+### on_reject Actions
 
-    Tests: {test_status}
-
-    Approve deployment?
-  """
-```
-
-String interpolation with `{variable}` is supported in the prompt.
-
-### The `allow` Property
-
-Specifies which principals can resolve the gate. In the LLM-as-VM model, the practical options are:
-
-- `["user"]` — Only the user running the OpenProse session (default)
-- `["user", "ops-team"]` — Named groups from `.prose/policy` (if configured)
-
-The VM enforces that agents within the session cannot self-approve.
-
-### The `timeout` Property
-
-Specifies how long to wait for approval before taking the `on_reject` action:
-
-```prose
-approve quick_check:
-  prompt: "Continue with default settings?"
-  timeout: "5m"
-  on_reject: continue  # Use defaults if no response
-```
-
-Timeout format: `"Ns"` (seconds), `"Nm"` (minutes), `"Nh"` (hours), `"Nd"` (days).
-
-### The `on_reject` Property
-
-Specifies what happens when the gate is rejected (or times out). Five behaviors are supported:
-
-#### 1. `throw` (default)
-
-Raises an error that can be caught by `try/catch`:
-
-```prose
-approve deploy:
-  prompt: "Deploy to production?"
-  on_reject: throw "Deployment cancelled by user"
-
-# Or with default message:
-approve deploy:
-  prompt: "Deploy to production?"
-  on_reject: throw  # Throws "Rejected"
-```
-
-#### 2. `retry` or `retry label`
-
-Jumps back to retry the workflow. Can specify a label to retry from:
-
-```prose
-@get_config
-let config = session "Generate configuration"
-
-approve config_review:
-  prompt: "Accept this configuration? {config}"
-  on_reject: retry get_config  # Go back to regenerate
-```
-
-Without a label, retries the immediately preceding statement.
-
-#### 3. `continue`
-
-**Warning**: Bypasses the approval and continues execution. Use sparingly—this is logged for audit purposes.
-
-```prose
-approve optional_review:
-  prompt: "Review the output before proceeding?"
-  timeout: "10m"
-  on_reject: continue  # Skip review if no response
-```
-
-#### 4. `session "prompt"`
-
-Spawns a custom error-handling session:
-
-```prose
-approve deploy:
-  prompt: "Deploy to production?"
-  on_reject: session "The user rejected deployment. Ask why and suggest alternatives."
-```
-
-#### 5. String shorthand
-
-A plain string is equivalent to `throw "string"`:
-
-```prose
-approve deploy:
-  prompt: "Deploy?"
-  on_reject: "User cancelled deployment"  # Same as: throw "User cancelled deployment"
-```
+| Action                | Behavior                                           |
+| --------------------- | -------------------------------------------------- |
+| `throw`               | Raise an error (default)                           |
+| `throw "message"`     | Raise an error with custom message                 |
+| `retry`               | Re-prompt the same gate                            |
+| `continue`            | Skip the gate and continue execution               |
+| `session "prompt"`    | Spawn a session to handle the rejection            |
 
 ### Examples
 
-#### Basic Deployment Approval
+#### Basic Gate
 
 ```prose
-let diff = session "Generate deployment diff"
+gate deploy_prod:
+  prompt: "Ready to deploy to production?"
+  timeout: "10m"
 
-approve production_deploy:
-  prompt: """
-    Ready to deploy to production.
-    Changes: {diff}
-    Approve?
-  """
+session "Deploy the application"
+```
+
+#### Gate with Rejection Handling
+
+```prose
+gate security_review:
+  prompt: "Security review passed?"
   allow: ["user"]
-  timeout: "4h"
-  on_reject: throw "Deployment cancelled"
+  timeout: "1h"
+  on_reject: throw "Security review failed - deployment blocked"
 
 session "Deploy to production"
 ```
 
-#### Retry Pattern for Configuration
+#### Gate with Retry
 
 ```prose
-@generate_config
-let config = session "Generate optimal configuration"
+gate confirm_deletion:
+  prompt: "Are you sure you want to delete all data?"
+  timeout: "5m"
+  on_reject: retry
 
-approve config_valid:
-  prompt: """
-    Generated configuration:
-    {config}
-
-    Is this correct?
-  """
-  on_reject: retry generate_config
-
-session "Apply configuration"
-  context: config
+session "Delete all data"
 ```
 
-#### Optional Review with Timeout
+#### Gate with Fallback Session
 
 ```prose
-let analysis = session "Analyze the codebase"
+gate budget_approval:
+  prompt: "Approve budget increase of $10,000?"
+  timeout: "24h"
+  on_reject: session "Request was not approved, notify stakeholders"
 
-approve detailed_review:
-  prompt: "Review detailed findings before continuing?"
-  timeout: "10m"
-  on_reject: continue  # Proceed without review if timeout
-
-session "Generate summary report"
-  context: analysis
+session "Process approved budget"
 ```
 
-#### Chained Approvals
+#### Gate with Continue
 
 ```prose
-# First approval: review plan
-let plan = session "Create implementation plan"
+gate optional_review:
+  prompt: "Would you like to review before proceeding?"
+  timeout: "5m"
+  on_reject: continue
 
-approve plan_review:
-  prompt: "Review and approve this plan? {plan}"
-  on_reject: throw "Plan rejected"
-
-# Execute the plan
-let result = session "Execute the plan"
-  context: plan
-
-# Second approval: review results
-approve result_review:
-  prompt: "Approve these results for delivery? {result}"
-  on_reject: session "User rejected results. Discuss improvements."
+# Execution continues whether approved or rejected/timed out
+session "Proceed with operation"
 ```
 
-#### With Error Handling
+### Gate Resolution
 
-```prose
-try:
-  approve risky_operation:
-    prompt: "This will modify production data. Continue?"
-    timeout: "5m"
-    on_reject: throw "Operation cancelled"
+Gates are resolved externally via the OpenProse CLI:
 
-  session "Perform risky operation"
-catch as err:
-  session "Operation was cancelled or failed: {err}"
-finally:
-  session "Log the attempt"
+```bash
+# List pending gates
+prose gates
+
+# Approve a gate
+prose gate approve <run_id> <gate_id>
+
+# Reject a gate
+prose gate reject <run_id> <gate_id>
 ```
 
-#### Inside Parallel Blocks
+### Allow Block (Forward-Compatible)
 
-```prose
-parallel:
-  # This branch pauses for approval
-  approved_work = do:
-    approve branch_a:
-      prompt: "Approve branch A?"
-    session "Execute branch A"
+The `allow` property specifies who can resolve the gate. Currently, only `["user"]` is meaningful—the VM treats any external caller as "user".
 
-  # This branch runs independently
-  auto_work = session "Execute branch B (no approval needed)"
-```
+We keep `allow` as a forward-compatible schema for future extensions:
+- **Service accounts**: `["ci-bot", "deploy-service"]` for automated workflows
+- **Role-based**: `["admin", "reviewer"]` for team-based approvals
+- **Identity**: `["@alice", "@bob"]` for named approvers
 
-The approval gate pauses only its branch; other parallel branches continue.
+The audit log captures `principal` - so when the VM gains caller discrimination, the data model is ready.
 
-#### Inside Loops
-
-```prose
-for item in items:
-  approve item_check:
-    prompt: "Process {item}?"
-    on_reject: continue  # Skip this item
-
-  session "Process {item}"
-```
-
-Each iteration gets its own gate instance (gate IDs are scoped by iteration).
+For now, `["user"]` is the only meaningful value. A validator warning is emitted for unrecognized principals.
 
 ### Execution Semantics
 
-When the OpenProse VM encounters an `approve` statement:
+When the OpenProse VM encounters a `gate` statement:
 
-1. **Create Gate Record**: Write a pending gate to the state backend with:
-   - `gate_id`: The identifier from the statement
-   - `prompt`: The rendered prompt text
-   - `allow`: The list of allowed principals
-   - `timeout`: The timeout duration (if specified)
-   - `created_at`: Timestamp
-
-2. **Emit Event**: Signal "awaiting approval" to the harness/UI
-
-3. **Block Execution**: Halt the program counter at this statement
-
-4. **Wait for Resolution**: The gate must be resolved externally via:
-   - CLI: `prose approve <run_id> <gate_id> --approve`
-   - CLI: `prose approve <run_id> <gate_id> --reject --reason "..."`
-   - UI: Approval button in the harness interface
-
-5. **On Approval**: Advance to the next statement
-
-6. **On Rejection**: Execute the `on_reject` action
-
-7. **On Timeout**: Treat as rejection, execute `on_reject` action
-
-### State Representation
-
-Gates are persisted in the state backend alongside run state.
-
-#### Filesystem Backend (default)
-
-```
-.prose/runs/<run_id>/
-  state.json
-  gates/
-    <gate_id>.pending.json     # While awaiting
-    <gate_id>.resolved.json    # After resolution
-```
-
-Resolution record format:
-```json
-{
-  "gate_id": "production_deploy",
-  "decision": "approve",
-  "principal": "raymond",
-  "timestamp": "2025-01-25T12:00:00Z",
-  "comment": "LGTM"
-}
-```
-
-#### SQLite Backend (recommended for production)
-
-With `--state="sqlite"`, gates are stored in the `gates` table:
-
-```sql
-SELECT id, status, prompt, resolved_by, resolved_at
-FROM gates
-WHERE run_id = '20260125-125506-002755';
-```
-
-The sqlite backend enables:
-- **CLI resolution**: `prose approve <run_id> <gate_id> --approve`
-- **Cross-session approval**: Resolve gates from a different terminal
-- **Audit queries**: `SELECT * FROM gates WHERE resolved_by = 'user'`
-- **Pending gate discovery**: `SELECT * FROM gates WHERE status = 'pending'`
-- **Compliance audit trail**: Append-only `gate_audit_log` table for forensic analysis
-
-See `state/sqlite.md` for the full `gates` table schema, `gate_audit_log` schema, and query patterns.
+1. **Record Gate**: Create a pending gate record with unique ID
+2. **Block Execution**: Pause and wait for external resolution
+3. **Monitor Timeout**: Start timeout countdown
+4. **On Resolution**:
+   - If approved: Continue to next statement
+   - If rejected: Execute `on_reject` action
+   - If timeout: Execute `on_reject` action (timeout = rejection)
+5. **Audit**: Log the resolution event with timestamp and principal
 
 ### Validation Rules
 
-| Check                       | Severity | Message                                    |
-| --------------------------- | -------- | ------------------------------------------ |
-| Missing prompt              | Error    | Approval gate must have a prompt           |
-| Empty gate_id               | Error    | Approval gate must have an identifier      |
-| Invalid on_reject action    | Error    | on_reject must be throw/retry/continue/session/string |
-| Retry label not found       | Error    | Label "X" not found for retry              |
-| Duplicate gate_id in scope  | Warning  | Gate ID may shadow outer scope             |
-| `continue` without timeout  | Warning  | `on_reject: continue` without timeout may never prompt |
+| Check                     | Severity | Message                                    |
+| ------------------------- | -------- | ------------------------------------------ |
+| Missing prompt            | Error    | Gate must have a prompt                    |
+| Empty prompt              | Warning  | Gate prompt is empty                       |
+| Invalid timeout format    | Error    | Timeout must be duration (e.g., "5m", "1h")|
+| Unrecognized principal    | Warning  | Principal not recognized: {value}          |
+| Invalid on_reject action  | Error    | on_reject must be throw, retry, continue, or session |
 
 ### Syntax Reference
 
 ```
-approve_statement ::= "approve" IDENTIFIER ":" NEWLINE INDENT approve_property+ DEDENT
+gate_statement ::= "gate" IDENTIFIER ":" NEWLINE INDENT gate_property+ DEDENT
 
-approve_property ::= "prompt" ":" string
-                   | "allow" ":" "[" string_list "]"
-                   | "timeout" ":" string
-                   | "on_reject" ":" on_reject_action
+gate_property ::= "prompt" ":" string
+                | "allow" ":" "[" string* "]"
+                | "timeout" ":" string
+                | "on_reject" ":" on_reject_action
 
-on_reject_action ::= "throw" string?
-                   | "retry" IDENTIFIER?
+on_reject_action ::= "throw" [string]
+                   | "retry"
                    | "continue"
                    | "session" string
-                   | string
-
-string_list ::= string ( "," string )*
 ```
 
 ---
@@ -3215,8 +3048,8 @@ program     → statement* EOF
 statement   → useStatement | inputDecl | agentDef | session | resumeStmt
             | letBinding | constBinding | assignment | outputBinding
             | parallelBlock | repeatBlock | forEachBlock | loopBlock
-            | tryBlock | choiceBlock | ifStatement | approveStatement
-            | doBlock | blockDef | throwStatement | comment
+            | tryBlock | choiceBlock | ifStatement | doBlock | blockDef
+            | throwStatement | gateStatement | comment
 
 # Program Composition
 useStatement → "use" string ( "as" IDENTIFIER )?
@@ -3264,14 +3097,16 @@ ifStatement → "if" discretion ":" NEWLINE INDENT statement+ DEDENT elifClause*
 elifClause  → "elif" discretion ":" NEWLINE INDENT statement+ DEDENT
 elseClause  → "else" ":" NEWLINE INDENT statement+ DEDENT
 
-# Approval Gates
-approveStatement → "approve" IDENTIFIER ":" NEWLINE INDENT approveProperty+ DEDENT
-approveProperty → "prompt" ":" string
-                | "allow" ":" "[" stringList "]"
-                | "timeout" ":" string
-                | "on_reject" ":" onRejectAction
-onRejectAction → "throw" string? | "retry" IDENTIFIER? | "continue" | "session" string | string
-stringList  → string ( "," string )*
+# Gates
+gateStatement → "gate" IDENTIFIER ":" NEWLINE INDENT gateProperty+ DEDENT
+gateProperty → "prompt" ":" string
+             | "allow" ":" "[" string* "]"
+             | "timeout" ":" string
+             | "on_reject" ":" onRejectAction
+onRejectAction → "throw" string?
+               | "retry"
+               | "continue"
+               | "session" string
 
 # Composition
 doBlock     → "do" ( ":" NEWLINE INDENT statement* DEDENT | IDENTIFIER args? )

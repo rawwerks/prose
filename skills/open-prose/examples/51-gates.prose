@@ -1,0 +1,66 @@
+# Gate Examples
+# Demonstrates various gate patterns for human-in-the-loop workflows
+
+# Example 1: Basic deployment gate
+# Blocks until user approves production deployment
+
+gate deploy_prod:
+  prompt: "Ready to deploy to production?"
+  timeout: "10m"
+
+session "Deploy the application to production servers"
+
+# Example 2: Gate with custom rejection handling
+# Throws a custom error message if rejected
+
+gate security_review:
+  prompt: "Security review passed for this release?"
+  allow: ["user"]
+  timeout: "1h"
+  on_reject: throw "Security review failed - deployment blocked"
+
+session "Deploy to production with security clearance"
+
+# Example 3: Gate with retry on rejection
+# Re-prompts the user if they reject
+
+gate confirm_deletion:
+  prompt: "Are you sure you want to delete all user data? This cannot be undone."
+  timeout: "5m"
+  on_reject: retry
+
+session "Delete all user data from the database"
+
+# Example 4: Gate with fallback session
+# Spawns a session to handle rejection gracefully
+
+gate budget_approval:
+  prompt: "Approve budget increase of $10,000 for infrastructure?"
+  timeout: "24h"
+  on_reject: session "Budget request was not approved. Notify finance team and explore alternatives."
+
+session "Process approved budget and provision infrastructure"
+
+# Example 5: Optional gate with continue
+# Proceeds whether approved or not (useful for optional reviews)
+
+gate optional_review:
+  prompt: "Would you like to review the changes before proceeding?"
+  timeout: "5m"
+  on_reject: continue
+
+# This runs regardless of gate outcome
+session "Proceed with the operation"
+
+# Example 6: Gate in a workflow
+# Combining gates with other constructs
+
+let analysis = session "Analyze the proposed changes"
+
+gate change_approval:
+  prompt: "Review complete. Approve these changes?"
+  timeout: "15m"
+  on_reject: throw "Changes rejected by reviewer"
+
+session "Apply the approved changes"
+  context: analysis

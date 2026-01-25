@@ -223,42 +223,29 @@ CREATE TABLE IF NOT EXISTS imports (
     outputs_schema TEXT  -- JSON
 );
 
--- Approval gates (for approve statements)
+-- Gates (trust boundaries requiring external resolution)
 CREATE TABLE IF NOT EXISTS gates (
-    id TEXT PRIMARY KEY,              -- gate_id from the approve statement
-    run_id TEXT REFERENCES run(id),
+    id TEXT PRIMARY KEY,
     execution_id INTEGER REFERENCES execution(id),
-    prompt TEXT,                      -- rendered prompt shown to user
-    allow TEXT DEFAULT '["user"]',    -- JSON array of allowed principals
-    timeout TEXT,                     -- timeout duration for display (e.g., "4h")
-    timeout_at TEXT,                  -- computed deadline timestamp (ISO 8601)
-    on_reject TEXT,                   -- action on rejection
-    status TEXT DEFAULT 'pending',    -- pending, approved, rejected, timeout
+    prompt TEXT NOT NULL,
+    allow TEXT DEFAULT '["user"]',  -- JSON array of allowed principals
+    timeout TEXT DEFAULT '30m',
+    on_reject TEXT DEFAULT 'throw',
+    status TEXT DEFAULT 'pending',  -- pending, approved, rejected, timeout
     created_at TEXT DEFAULT (datetime('now')),
     resolved_at TEXT,
-    resolved_by TEXT,                 -- principal who resolved (e.g., "user", "raymond")
-    resolution_comment TEXT,          -- optional comment from approver
-    metadata TEXT                     -- JSON for additional data
+    resolved_by TEXT  -- principal who resolved (user, system for timeout)
 );
 
--- Index for querying pending gates
-CREATE INDEX IF NOT EXISTS idx_gates_status ON gates(status);
-CREATE INDEX IF NOT EXISTS idx_gates_run ON gates(run_id);
-CREATE INDEX IF NOT EXISTS idx_gates_timeout ON gates(timeout_at) WHERE timeout_at IS NOT NULL;
-
--- Gate audit log (append-only compliance trail)
+-- Gate audit log (append-only)
 CREATE TABLE IF NOT EXISTS gate_audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    gate_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,  -- created, viewed, approved, rejected, timeout, resumed
-    principal TEXT,            -- who triggered the event (NULL for system events)
-    comment TEXT,              -- optional context or reason
+    gate_id TEXT REFERENCES gates(id),
+    event_type TEXT NOT NULL,  -- created, approved, rejected, timeout
+    principal TEXT,  -- who triggered the event (user, system)
     timestamp TEXT DEFAULT (datetime('now')),
-    metadata TEXT              -- JSON for additional event-specific data
+    metadata TEXT  -- JSON for additional context
 );
-CREATE INDEX IF NOT EXISTS idx_gate_audit_gate ON gate_audit_log(gate_id);
-CREATE INDEX IF NOT EXISTS idx_gate_audit_run ON gate_audit_log(run_id);
 ```
 
 ### Schema Conventions
@@ -502,379 +489,113 @@ VALUES (15, 'session "Risky"', 'completed', '{"attempt": 2}');
 
 ---
 
-## Approval Gates
+## Gate Operations
 
-Approval gates (`approve gate_id:`) create deterministic user checkpoints. The `gates` table tracks pending and resolved gates.
+Gates are trust boundaries that block execution until resolved externally. The VM tracks gates in the `gates` table and logs all events to `gate_audit_log`.
 
 ### Creating a Gate
 
-When the VM encounters an `approve` statement:
+When the VM encounters a `gate` statement:
 
 ```sql
--- Insert pending gate (compute timeout_at from timeout string)
-INSERT INTO gates (id, run_id, execution_id, prompt, allow, timeout, timeout_at, on_reject, status)
+-- Create pending gate
+INSERT INTO gates (id, execution_id, prompt, allow, timeout, on_reject, status)
 VALUES (
-  'production_deploy',
-  '20260125-125506-002755',
-  3,
-  'Ready to deploy to production. Changes: ...',
+  'deploy_prod',
+  42,
+  'Ready to deploy to production?',
   '["user"]',
-  '4h',
-  datetime('now', '+4 hours'),  -- computed deadline
-  'throw "Deployment cancelled"',
+  '10m',
+  'throw',
   'pending'
 );
 
--- Also append to execution table
-INSERT INTO execution (statement_index, statement_text, status, metadata)
-VALUES (3, 'approve production_deploy:', 'pending', '{"gate_id": "production_deploy"}');
+-- Log creation event
+INSERT INTO gate_audit_log (gate_id, event_type, principal)
+VALUES ('deploy_prod', 'created', 'system');
+```
+
+### Querying Pending Gates
+
+```sql
+-- List all pending gates for a run
+SELECT g.id, g.prompt, g.timeout, g.created_at
+FROM gates g
+JOIN execution e ON g.execution_id = e.id
+WHERE g.status = 'pending'
+ORDER BY g.created_at;
+
+-- Check if gate has timed out
+SELECT id, prompt,
+  datetime(created_at, '+' ||
+    CASE
+      WHEN timeout LIKE '%m' THEN CAST(REPLACE(timeout, 'm', '') AS INTEGER) || ' minutes'
+      WHEN timeout LIKE '%h' THEN CAST(REPLACE(timeout, 'h', '') AS INTEGER) || ' hours'
+      WHEN timeout LIKE '%s' THEN CAST(REPLACE(timeout, 's', '') AS INTEGER) || ' seconds'
+    END
+  ) as expires_at
+FROM gates
+WHERE status = 'pending';
 ```
 
 ### Resolving a Gate
 
-Resolution can come from CLI, UI, or another process:
-
 ```sql
--- Approve the gate
-UPDATE gates SET
-  status = 'approved',
-  resolved_at = datetime('now'),
-  resolved_by = 'raymond',
-  resolution_comment = 'LGTM - reviewed changes'
-WHERE id = 'production_deploy' AND run_id = '20260125-125506-002755';
+-- Approve a gate
+UPDATE gates SET status = 'approved', resolved_at = datetime('now'), resolved_by = 'user'
+WHERE id = 'deploy_prod';
 
--- Reject the gate
-UPDATE gates SET
-  status = 'rejected',
-  resolved_at = datetime('now'),
-  resolved_by = 'user',
-  resolution_comment = 'Need more testing first'
-WHERE id = 'production_deploy' AND run_id = '20260125-125506-002755';
+INSERT INTO gate_audit_log (gate_id, event_type, principal)
+VALUES ('deploy_prod', 'approved', 'user');
+
+-- Reject a gate
+UPDATE gates SET status = 'rejected', resolved_at = datetime('now'), resolved_by = 'user'
+WHERE id = 'deploy_prod';
+
+INSERT INTO gate_audit_log (gate_id, event_type, principal)
+VALUES ('deploy_prod', 'rejected', 'user');
+
+-- Timeout a gate (triggered by VM when timeout expires)
+UPDATE gates SET status = 'timeout', resolved_at = datetime('now'), resolved_by = 'system'
+WHERE id = 'deploy_prod';
+
+INSERT INTO gate_audit_log (gate_id, event_type, principal, metadata)
+VALUES ('deploy_prod', 'timeout', 'system', '{"reason": "timeout expired"}');
 ```
 
-### Querying Gates
+### Gate CLI Commands
 
-```sql
--- Find all pending gates (for a CLI "prose gates" command)
-SELECT g.id, g.prompt, g.created_at, r.program_path
-FROM gates g
-JOIN run r ON g.run_id = r.id
-WHERE g.status = 'pending'
-ORDER BY g.created_at;
-
--- Find gates for a specific run
-SELECT id, status, prompt, resolved_by, resolved_at
-FROM gates
-WHERE run_id = '20260125-125506-002755';
-
--- Check if a run has any pending gates (for resume logic)
-SELECT COUNT(*) as pending_count
-FROM gates
-WHERE run_id = '20260125-125506-002755' AND status = 'pending';
-```
-
-### CLI Integration
-
-The sqlite backend enables a `prose approve` CLI command:
+The `prose` CLI provides commands for gate management:
 
 ```bash
-# List pending gates across all runs
-prose gates --pending
-
-# Approve a specific gate
-prose approve 20260125-125506-002755 production_deploy --approve --comment "LGTM"
-
-# Reject a gate
-prose approve 20260125-125506-002755 production_deploy --reject --reason "Need review"
-
-# These commands translate to SQL:
-sqlite3 .prose/runs/20260125-125506-002755/state.db "
-  UPDATE gates SET status='approved', resolved_at=datetime('now'), resolved_by='user'
-  WHERE id='production_deploy'
-"
-```
-
-### Timeout Handling
-
-Gates can specify a timeout duration using human-readable strings. The VM parses these into a computed `timeout_at` timestamp at creation time.
-
-#### Timeout Parsing Rules
-
-| Format | Example | Seconds | SQLite Modifier |
-|--------|---------|---------|-----------------|
-| Seconds | `30s` | 30 | `'+30 seconds'` |
-| Minutes | `30m` | 1800 | `'+30 minutes'` |
-| Hours | `4h` | 14400 | `'+4 hours'` |
-| Days | `7d` | 604800 | `'+7 days'` |
-| Combined | `2h30m` | 9000 | `'+2 hours', '+30 minutes'` |
-
-**Design principle:** Keep the original `timeout` string for display ("Expires in 4h"), compute `timeout_at` as the actual deadline timestamp for queries.
-
-#### Computing timeout_at
-
-```sql
--- Simple durations
-INSERT INTO gates (id, timeout, timeout_at, ...)
-VALUES ('gate1', '30s', datetime('now', '+30 seconds'), ...);
-
-INSERT INTO gates (id, timeout, timeout_at, ...)
-VALUES ('gate2', '4h', datetime('now', '+4 hours'), ...);
-
-INSERT INTO gates (id, timeout, timeout_at, ...)
-VALUES ('gate3', '7d', datetime('now', '+7 days'), ...);
-
--- Combined duration (2h30m = 2 hours + 30 minutes)
-INSERT INTO gates (id, timeout, timeout_at, ...)
-VALUES ('gate4', '2h30m', datetime('now', '+2 hours', '+30 minutes'), ...);
-```
-
-#### Querying Timed-Out Gates
-
-With `timeout_at` pre-computed, timeout checks are simple:
-
-```sql
--- Find all gates that have timed out
-SELECT id, run_id, timeout, timeout_at
-FROM gates
-WHERE status = 'pending'
-  AND timeout_at IS NOT NULL
-  AND timeout_at < datetime('now');
-
--- Find gates expiring in the next hour (for notifications)
-SELECT id, run_id, prompt, timeout_at
-FROM gates
-WHERE status = 'pending'
-  AND timeout_at IS NOT NULL
-  AND timeout_at BETWEEN datetime('now') AND datetime('now', '+1 hour');
-
--- Mark timed-out gates
-UPDATE gates
-SET status = 'timeout', resolved_at = datetime('now')
-WHERE status = 'pending'
-  AND timeout_at IS NOT NULL
-  AND timeout_at < datetime('now');
-```
-
-### Gate Resolution from Suspended Run
-
-When a program is suspended at a gate and later resumed:
-
-```sql
--- Check if gate was resolved while suspended
-SELECT status, resolved_by, resolution_comment
-FROM gates
-WHERE id = 'production_deploy' AND run_id = '20260125-125506-002755';
-```
-
-If `status = 'approved'`, the VM continues. If `status = 'rejected'`, execute `on_reject`. If still `pending`, continue waiting.
-
----
-
-## Gate Resolution Protocol (Reference)
-
-Quick reference for discovering and resolving approval gates.
-
-### Gate Lifecycle
-
-```
-pending → approved | rejected | timeout
-```
-
-### Discovery SQL
-
-```sql
--- All pending gates across runs
-SELECT * FROM gates WHERE status = 'pending';
-
--- Pending gates with run context
-SELECT g.id, g.run_id, g.prompt, g.created_at, r.program_path
-FROM gates g
-JOIN run r ON g.run_id = r.id
-WHERE g.status = 'pending'
-ORDER BY g.created_at;
-```
-
-### Resolution SQL
-
-```sql
--- Approve
-UPDATE gates SET
-  status = 'approved',
-  resolved_at = datetime('now'),
-  resolved_by = 'user'
-WHERE id = '<gate_id>' AND run_id = '<run_id>';
-
--- Reject
-UPDATE gates SET
-  status = 'rejected',
-  resolved_at = datetime('now'),
-  resolved_by = 'user',
-  resolution_comment = 'Reason here'
-WHERE id = '<gate_id>' AND run_id = '<run_id>';
-
--- Timeout (set by VM or background process)
-UPDATE gates SET
-  status = 'timeout',
-  resolved_at = datetime('now'),
-  resolved_by = 'system'
-WHERE id = '<gate_id>' AND run_id = '<run_id>';
-```
-
-### CLI Commands
-
-```bash
-# List pending gates
+# List pending gates for current run
 prose gates
 
+# List gates for a specific run
+prose gates --run 20260116-143052-a7b3c9
+
 # Approve a gate
-prose approve <run_id> <gate_id>
+prose gate approve deploy_prod
+prose gate approve --run 20260116-143052-a7b3c9 deploy_prod
 
 # Reject a gate
-prose reject <run_id> <gate_id> --reason="explanation"
+prose gate reject deploy_prod
+prose gate reject --run 20260116-143052-a7b3c9 deploy_prod
+
+# View gate audit log
+prose gate log deploy_prod
 ```
 
----
+### Timeout = Rejection
 
-## Gate Audit Logging
+When a gate's timeout expires, it is automatically rejected and triggers `on_reject`:
 
-The `gate_audit_log` table provides an **append-only compliance trail** for all approval gate activity. Unlike the `gates` table (which tracks current state), the audit log captures every event for forensic and compliance purposes.
+1. VM monitors gate creation timestamp
+2. When `created_at + timeout` passes, VM updates status to `timeout`
+3. `on_reject` action is executed (default: `throw`)
+4. Audit log records the timeout event with `principal = 'system'`
 
-### Event Types
-
-| Event Type | When Logged | Principal | Typical Metadata |
-|------------|-------------|-----------|------------------|
-| `created` | VM creates a new gate | `system` | `{"prompt_hash": "...", "allow": [...]}` |
-| `viewed` | User or process queries gate details | The viewer | `{"client": "cli", "ip": "..."}` |
-| `approved` | Gate is approved | The approver | `{"comment": "LGTM"}` |
-| `rejected` | Gate is rejected | The rejector | `{"comment": "Need review", "on_reject": "throw"}` |
-| `timeout` | Gate times out without resolution | `system` | `{"timeout_at": "...", "on_reject": "continue"}` |
-| `resumed` | Suspended run resumes at this gate | `system` | `{"resume_source": "cli", "previous_status": "pending"}` |
-
-### Logging Pattern
-
-The audit log follows an **append-only pattern**—records are never updated or deleted. This ensures a tamper-evident history.
-
-**When creating a gate:**
-
-```sql
--- VM logs gate creation
-INSERT INTO gate_audit_log (gate_id, run_id, event_type, principal, metadata)
-VALUES (
-  'production_deploy',
-  '20260125-125506-002755',
-  'created',
-  'system',
-  '{"prompt_hash": "sha256:abc123...", "allow": ["user", "ops-team"]}'
-);
-```
-
-**When resolving a gate:**
-
-```sql
--- Log the approval event
-INSERT INTO gate_audit_log (gate_id, run_id, event_type, principal, comment, metadata)
-VALUES (
-  'production_deploy',
-  '20260125-125506-002755',
-  'approved',
-  'raymond',
-  'Reviewed changes, LGTM',
-  '{"client": "cli", "approval_time_seconds": 847}'
-);
-
--- Then update the gates table (existing pattern)
-UPDATE gates SET status = 'approved', resolved_at = datetime('now'), ...
-```
-
-**When a gate times out:**
-
-```sql
-INSERT INTO gate_audit_log (gate_id, run_id, event_type, principal, metadata)
-VALUES (
-  'optional_review',
-  '20260125-125506-002755',
-  'timeout',
-  'system',
-  '{"timeout_at": "2026-01-25T16:00:00Z", "on_reject": "continue"}'
-);
-```
-
-### Common Audit Queries
-
-**Complete history for a specific gate:**
-
-```sql
-SELECT event_type, principal, comment, timestamp
-FROM gate_audit_log
-WHERE gate_id = 'production_deploy' AND run_id = '20260125-125506-002755'
-ORDER BY timestamp;
-```
-
-**All approval activity by a principal:**
-
-```sql
-SELECT gate_id, run_id, event_type, comment, timestamp
-FROM gate_audit_log
-WHERE principal = 'raymond' AND event_type IN ('approved', 'rejected')
-ORDER BY timestamp DESC;
-```
-
-**Gates that timed out (compliance reporting):**
-
-```sql
-SELECT gate_id, run_id, timestamp, json_extract(metadata, '$.timeout_at') as deadline
-FROM gate_audit_log
-WHERE event_type = 'timeout'
-ORDER BY timestamp DESC;
-```
-
-**Approval activity within a time window:**
-
-```sql
-SELECT gate_id, run_id, event_type, principal, timestamp
-FROM gate_audit_log
-WHERE event_type IN ('approved', 'rejected')
-  AND timestamp >= datetime('now', '-24 hours')
-ORDER BY timestamp DESC;
-```
-
-**Gate resolution time analysis:**
-
-```sql
--- How long did gates wait before resolution?
-SELECT
-  g.id as gate_id,
-  g.run_id,
-  g.created_at,
-  a.timestamp as resolved_at,
-  (julianday(a.timestamp) - julianday(g.created_at)) * 24 * 60 as wait_minutes
-FROM gates g
-JOIN gate_audit_log a ON g.id = a.gate_id AND g.run_id = a.run_id
-WHERE a.event_type IN ('approved', 'rejected', 'timeout')
-ORDER BY wait_minutes DESC;
-```
-
-**Aggregate stats for compliance dashboard:**
-
-```sql
-SELECT
-  event_type,
-  COUNT(*) as count,
-  COUNT(DISTINCT principal) as unique_principals
-FROM gate_audit_log
-WHERE timestamp >= datetime('now', '-30 days')
-GROUP BY event_type;
-```
-
-### Responsibility
-
-| Actor | Audit Responsibilities |
-|-------|------------------------|
-| **VM** | Log `created`, `timeout`, `resumed` events |
-| **CLI/UI** | Log `viewed`, `approved`, `rejected` events |
-| **Background process** | Log `timeout` events for expired gates |
-
-The VM must log `created` when creating a gate and `resumed` when resuming at a gate. Resolution tools (CLI, UI) must log their events before updating gate status.
+There is no auto-approve on timeout—gates fail closed for safety.
 
 ---
 

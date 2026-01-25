@@ -1,0 +1,63 @@
+# Gate End-to-End Test
+# Tests the full gate lifecycle: creation, pending state, resolution, and continuation
+
+# Setup: Define what we're testing
+session "Initialize test environment"
+
+# Test 1: Basic gate approval flow
+# This gate should block until approved, then continue
+
+gate e2e_test_approve:
+  prompt: "E2E Test: Please APPROVE this gate to continue the test"
+  timeout: "2m"
+  on_reject: throw "Test failed: gate was rejected instead of approved"
+
+session "Gate was approved - test continues"
+
+# Test 2: Gate with context preservation
+# Verify that context flows correctly across gate boundaries
+
+let pre_gate_data = session "Generate test data: a random number between 1-100"
+
+gate context_test:
+  prompt: "Test 2: Approve to verify context preservation"
+  timeout: "2m"
+
+session "Verify the pre-gate data was preserved"
+  context: pre_gate_data
+
+# Test 3: Gate in parallel block
+# Gates inside parallel blocks should all be tracked
+
+parallel:
+  branch_a = do:
+    gate parallel_gate_a:
+      prompt: "Parallel Test A: Approve branch A"
+      timeout: "2m"
+    session "Branch A completed"
+
+  branch_b = do:
+    gate parallel_gate_b:
+      prompt: "Parallel Test B: Approve branch B"
+      timeout: "2m"
+    session "Branch B completed"
+
+session "Both parallel branches with gates completed"
+  context: { branch_a, branch_b }
+
+# Test 4: Sequential gates
+# Multiple gates in sequence
+
+gate seq_gate_1:
+  prompt: "Sequential Test 1/3: Approve first gate"
+  timeout: "2m"
+
+gate seq_gate_2:
+  prompt: "Sequential Test 2/3: Approve second gate"
+  timeout: "2m"
+
+gate seq_gate_3:
+  prompt: "Sequential Test 3/3: Approve third gate"
+  timeout: "2m"
+
+session "All sequential gates approved - E2E test complete!"

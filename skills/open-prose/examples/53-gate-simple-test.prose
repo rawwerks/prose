@@ -1,0 +1,8 @@
+# Simple Gate Test
+# Minimal test to verify basic gate functionality
+
+# A single gate with default settings
+gate simple_test:
+  prompt: "Simple test: Approve this gate to pass the test"
+
+session "Gate approved successfully - simple test passed!"

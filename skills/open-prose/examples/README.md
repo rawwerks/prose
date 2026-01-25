@@ -119,12 +119,17 @@ These examples demonstrate workflows using OpenProse's full feature set.
 | `49-prose-run-retrospective.prose`           | Analyzes completed runs to extract learnings and improve .prose      |
 | `50-interactive-tutor.prose`                 | Demonstrates `input` primitive with interactive tutoring flow        |
 
-### Approval Gates (51-52)
+### Gates (51-57)
 
-| File                              | Description                                              |
-| --------------------------------- | -------------------------------------------------------- |
-| `51-approval-gates.prose`         | User approval checkpoints with prompt, timeout, on_reject |
-| `52-approval-gates-e2e-test.prose`| E2E test suite: accept, reject, timeout, retry scenarios |
+| File                                         | Description                                                          |
+| -------------------------------------------- | -------------------------------------------------------------------- |
+| `51-gates.prose`                             | Basic gate patterns: approval, rejection handling, timeouts          |
+| `52-gates-e2e-test.prose`                    | End-to-end gate test: lifecycle, context, parallel, sequential       |
+| `53-gate-simple-test.prose`                  | Minimal gate test for basic functionality verification               |
+| `54-gate-reject-test.prose`                  | Tests on_reject behaviors: throw, continue, session, retry           |
+| `55-gate-retry-test.prose`                   | Tests retry behavior when gates are rejected                         |
+| `56-timeout-normalization-test.prose`        | Tests timeout triggers on_reject (timeout = rejection)               |
+| `57-audit-log-test.prose`                    | Tests gate_audit_log captures all events                             |
 
 ## The Architect By Simulation Pattern
 
@@ -376,14 +381,13 @@ choice **criteria**:
     session "..."
 ```
 
-### Approval Gates
+### Gates
 
 ```prose
-approve gate_id:
-  prompt: "Approve this action?"
-  allow: ["user"]
-  timeout: "4h"
-  on_reject: throw "Rejected"
+gate deploy:
+  prompt: "Deploy to production?"
+  timeout: "5m"                       # Duration before auto-reject
+  on_reject: throw                    # throw, retry, continue, session
 ```
 
 ### Blocks

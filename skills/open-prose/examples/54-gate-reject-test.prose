@@ -1,0 +1,46 @@
+# Gate Rejection Test
+# Tests various on_reject behaviors
+
+# Test 1: Rejection with throw (default behavior)
+# Reject this gate to see the error
+
+try:
+  gate reject_throw_test:
+    prompt: "Test 1: REJECT this gate to test throw behavior"
+    timeout: "2m"
+    on_reject: throw "Rejection test passed: gate was rejected with throw"
+
+  session "This should NOT run if gate was rejected"
+catch as err:
+  session "Caught expected rejection error"
+    context: err
+
+# Test 2: Rejection with continue
+# Reject this gate - execution should continue
+
+gate reject_continue_test:
+  prompt: "Test 2: REJECT this gate to test continue behavior"
+  timeout: "2m"
+  on_reject: continue
+
+session "This SHOULD run even after rejection (on_reject: continue)"
+
+# Test 3: Rejection with session handler
+# Reject this gate to trigger the fallback session
+
+gate reject_session_test:
+  prompt: "Test 3: REJECT this gate to test session handler"
+  timeout: "2m"
+  on_reject: session "Rejection handler activated: processing rejection gracefully"
+
+session "Continuing after rejection was handled"
+
+# Test 4: Rejection with retry
+# Reject once, then approve on retry
+
+gate reject_retry_test:
+  prompt: "Test 4: REJECT first, then APPROVE on retry"
+  timeout: "2m"
+  on_reject: retry
+
+session "Gate eventually approved after retry - test complete!"

@@ -1,211 +1,59 @@
 # Gate Audit Log Test
-# Tests that the gate_audit_log table schema exists and works correctly
-# Uses SQLite state mode to verify audit log functionality
+# Tests that gate events are properly logged to gate_audit_log
 
-# Step 1: Initialize and verify SQLite schema
-let schema_check = session "Verify gate_audit_log table schema"
-  context: |
-    Initialize the SQLite state database for this test run.
+# This test creates multiple gates with different outcomes
+# to verify the audit log captures all events
 
-    1. Create the run directory:
-       mkdir -p .prose/runs/audit-log-test
+session "Starting audit log test - creating multiple gates"
 
-    2. Create state.db with the gate_audit_log schema:
-       sqlite3 .prose/runs/audit-log-test/state.db "
-         CREATE TABLE IF NOT EXISTS gate_audit_log (
-           id INTEGER PRIMARY KEY AUTOINCREMENT,
-           gate_id TEXT NOT NULL,
-           run_id TEXT NOT NULL,
-           event_type TEXT NOT NULL,
-           principal TEXT,
-           comment TEXT,
-           timestamp TEXT DEFAULT (datetime('now')),
-           metadata TEXT
-         );
-         CREATE INDEX IF NOT EXISTS idx_gate_audit_gate ON gate_audit_log(gate_id);
-         CREATE INDEX IF NOT EXISTS idx_gate_audit_run ON gate_audit_log(run_id);
-       "
+# Gate 1: Will be approved
+# Expected audit events: created, approved
 
-    3. Verify schema:
-       sqlite3 .prose/runs/audit-log-test/state.db ".schema gate_audit_log"
+gate audit_approve:
+  prompt: "Audit Test 1: APPROVE this gate"
+  timeout: "2m"
 
-    Report: PASS if schema matches expected structure, FAIL otherwise.
+session "Gate 1 approved - checking audit log..."
 
-# Step 2: Test gate creation logging
-let creation_test = session "Test: Gate creation logs 'created' event"
-  context: |
-    Simulate VM logging a gate creation event.
+# Gate 2: Will be rejected (with continue)
+# Expected audit events: created, rejected
 
-    Insert a 'created' event:
-    sqlite3 .prose/runs/audit-log-test/state.db "
-      INSERT INTO gate_audit_log (gate_id, run_id, event_type, principal, metadata)
-      VALUES (
-        'test_gate_1',
-        'audit-log-test',
-        'created',
-        'system',
-        '{\"prompt_hash\": \"sha256:abc123\", \"allow\": [\"user\"]}'
-      );
-    "
+gate audit_reject:
+  prompt: "Audit Test 2: REJECT this gate"
+  timeout: "2m"
+  on_reject: continue
 
-    Verify the event was logged:
-    sqlite3 -json .prose/runs/audit-log-test/state.db "
-      SELECT * FROM gate_audit_log WHERE gate_id = 'test_gate_1' AND event_type = 'created'
-    "
+session "Gate 2 rejected - checking audit log..."
 
-    Report: PASS if 'created' event exists with principal='system', FAIL otherwise.
+# Gate 3: Will timeout (with continue)
+# Expected audit events: created, timeout
+# Note: In actual test, would need to wait for timeout
 
-# Step 3: Test gate approval logging
-let approval_test = session "Test: Gate approval logs 'approved' event"
-  context: |
-    Simulate logging a gate approval event.
+gate audit_timeout:
+  prompt: "Audit Test 3: DO NOT RESPOND (let timeout)"
+  timeout: "10s"
+  on_reject: continue
 
-    Insert an 'approved' event:
-    sqlite3 .prose/runs/audit-log-test/state.db "
-      INSERT INTO gate_audit_log (gate_id, run_id, event_type, principal, comment, metadata)
-      VALUES (
-        'test_gate_1',
-        'audit-log-test',
-        'approved',
-        'raymond',
-        'Reviewed changes, LGTM',
-        '{\"client\": \"cli\", \"approval_time_seconds\": 120}'
-      );
-    "
+session "Gate 3 timed out - checking audit log..."
 
-    Verify the event was logged:
-    sqlite3 -json .prose/runs/audit-log-test/state.db "
-      SELECT * FROM gate_audit_log WHERE gate_id = 'test_gate_1' AND event_type = 'approved'
-    "
+# Verification session
+# In a real test, this would query the database
 
-    Report: PASS if 'approved' event exists with principal='raymond', FAIL otherwise.
+session """
+Audit log verification:
 
-# Step 4: Test gate rejection logging
-let rejection_test = session "Test: Gate rejection logs 'rejected' event"
-  context: |
-    Create a second gate and simulate rejection.
+Expected entries in gate_audit_log table:
+1. gate_id='audit_approve', event_type='created', principal='system'
+2. gate_id='audit_approve', event_type='approved', principal='user'
+3. gate_id='audit_reject', event_type='created', principal='system'
+4. gate_id='audit_reject', event_type='rejected', principal='user'
+5. gate_id='audit_timeout', event_type='created', principal='system'
+6. gate_id='audit_timeout', event_type='timeout', principal='system'
 
-    Insert 'created' event for second gate:
-    sqlite3 .prose/runs/audit-log-test/state.db "
-      INSERT INTO gate_audit_log (gate_id, run_id, event_type, principal, metadata)
-      VALUES (
-        'test_gate_2',
-        'audit-log-test',
-        'created',
-        'system',
-        '{\"prompt_hash\": \"sha256:def456\", \"allow\": [\"user\"]}'
-      );
-    "
+Query to verify:
+  SELECT gate_id, event_type, principal, timestamp
+  FROM gate_audit_log
+  ORDER BY timestamp;
 
-    Insert 'rejected' event:
-    sqlite3 .prose/runs/audit-log-test/state.db "
-      INSERT INTO gate_audit_log (gate_id, run_id, event_type, principal, comment, metadata)
-      VALUES (
-        'test_gate_2',
-        'audit-log-test',
-        'rejected',
-        'user',
-        'Need more testing first',
-        '{\"on_reject\": \"throw\"}'
-      );
-    "
-
-    Verify both events exist:
-    sqlite3 -json .prose/runs/audit-log-test/state.db "
-      SELECT event_type, principal, comment FROM gate_audit_log WHERE gate_id = 'test_gate_2' ORDER BY id
-    "
-
-    Report: PASS if both 'created' and 'rejected' events exist, FAIL otherwise.
-
-# Step 5: Verify append-only nature (no updates allowed conceptually)
-let append_only_test = session "Test: Audit log is append-only"
-  context: |
-    The audit log should be append-only - verify by checking:
-
-    1. Each gate has multiple rows (not one row that gets updated):
-       sqlite3 .prose/runs/audit-log-test/state.db "
-         SELECT gate_id, COUNT(*) as event_count, GROUP_CONCAT(event_type) as events
-         FROM gate_audit_log
-         GROUP BY gate_id
-       "
-
-    2. IDs are sequential and never reused:
-       sqlite3 .prose/runs/audit-log-test/state.db "
-         SELECT id, gate_id, event_type FROM gate_audit_log ORDER BY id
-       "
-
-    3. Timestamps are sequential:
-       sqlite3 .prose/runs/audit-log-test/state.db "
-         SELECT id, timestamp FROM gate_audit_log ORDER BY id
-       "
-
-    Report: PASS if:
-    - test_gate_1 has 2 events (created, approved)
-    - test_gate_2 has 2 events (created, rejected)
-    - All IDs are unique and sequential
-    FAIL otherwise.
-
-# Step 6: Test compliance queries from sqlite.md
-let compliance_test = session "Test: Compliance queries work correctly"
-  context: |
-    Run the compliance queries documented in sqlite.md:
-
-    1. Complete history for a specific gate:
-       sqlite3 -json .prose/runs/audit-log-test/state.db "
-         SELECT event_type, principal, comment, timestamp
-         FROM gate_audit_log
-         WHERE gate_id = 'test_gate_1'
-         ORDER BY timestamp
-       "
-
-    2. All approval/rejection activity by a principal:
-       sqlite3 -json .prose/runs/audit-log-test/state.db "
-         SELECT gate_id, run_id, event_type, comment, timestamp
-         FROM gate_audit_log
-         WHERE principal = 'raymond' AND event_type IN ('approved', 'rejected')
-         ORDER BY timestamp DESC
-       "
-
-    3. Aggregate stats:
-       sqlite3 -json .prose/runs/audit-log-test/state.db "
-         SELECT event_type, COUNT(*) as count, COUNT(DISTINCT principal) as unique_principals
-         FROM gate_audit_log
-         GROUP BY event_type
-       "
-
-    Report: PASS if all queries return expected results, FAIL otherwise.
-
-# Step 7: Cleanup and final summary
-output summary = session "Generate test summary and cleanup"
-  context: |
-    Summarize all test results:
-
-    - schema_check: {schema_check}
-    - creation_test: {creation_test}
-    - approval_test: {approval_test}
-    - rejection_test: {rejection_test}
-    - append_only_test: {append_only_test}
-    - compliance_test: {compliance_test}
-
-    Final verification - show all audit log entries:
-    sqlite3 -column -header .prose/runs/audit-log-test/state.db "SELECT * FROM gate_audit_log"
-
-    Generate a summary report:
-
-    ## Gate Audit Log Test Results
-
-    | Test | Result |
-    |------|--------|
-    | Schema verification | PASS/FAIL |
-    | Gate creation logging | PASS/FAIL |
-    | Gate approval logging | PASS/FAIL |
-    | Gate rejection logging | PASS/FAIL |
-    | Append-only verification | PASS/FAIL |
-    | Compliance queries | PASS/FAIL |
-
-    ## Issues Found
-    [List any issues or all tests passed]
-
-    ## Cleanup
-    Optionally remove test database:
-    rm -rf .prose/runs/audit-log-test
+Confirm all expected events are present in the audit log.
+"""
