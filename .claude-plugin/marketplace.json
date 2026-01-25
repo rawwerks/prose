@@ -6,9 +6,9 @@
   },
   "plugins": [
     {
-      "name": "open-prose",
+      "name": "open-prose-raw",
       "source": "./",
-      "description": "A programming language for AI sessions - structures English into unambiguous control flow for multi-agent orchestration"
+      "description": "OpenProse with approval gates - rawwerks fork with user approval checkpoints"
     },
     {
       "name": "websh",
