@@ -326,7 +326,7 @@ The VM:
 
 program := statement\*
 
-statement := useStatement | inputDecl | agentDef | session | resumeStmt
+statement := useStatement | inputDecl | gateStmt | agentDef | session | resumeStmt
 | letBinding | constBinding | assignment | outputBinding
 | parallelBlock | repeatBlock | forEachBlock | loopBlock
 | tryBlock | choiceBlock | ifStatement | doBlock | blockDef
@@ -336,6 +336,9 @@ statement := useStatement | inputDecl | agentDef | session | resumeStmt
 
 useStatement := "use" STRING ("as" NAME)?
 inputDecl := "input" NAME ":" STRING
+gateStmt := "gate" NAME ":" INDENT gateProperty* DEDENT
+gateProperty := "prompt:" STRING | "allow:" "[" STRING* "]" | "timeout:" STRING | "on_reject:" gateAction
+gateAction := "throw" STRING? | "retry" | "continue" | "session" STRING
 outputBinding := "output" NAME "=" expression
 
 # Definitions
@@ -778,6 +781,98 @@ Inputs:
 - Bind immediately if value is pre-supplied
 - Pause for user input if no value is available
 - Become available as variables after binding
+
+### Gates
+
+Gates are trust boundaries that require **external resolution**. Unlike `input` (which agents can provide via discretion), gates **must** be resolved by an external principal (typically the user). Gates enable human-in-the-loop workflows for critical decisions.
+
+```prose
+gate deploy_prod:
+  prompt: "Ready to deploy to production?"
+  timeout: "10m"
+  on_reject: throw "Deployment cancelled"
+```
+
+#### Gate vs Input
+
+| Aspect | `input` | `gate` |
+|--------|---------|--------|
+| **Nature** | Soft checkpoint | Hard barrier |
+| **Agent discretion** | Can bypass with `**...**` | Cannot bypass |
+| **Resolution** | Caller, runtime, or AI | External only |
+| **Default behavior** | Can use defaults | No defaults allowed |
+| **Use case** | Data, preferences | Approvals, compliance |
+
+Use `input` when you need **data** from the user. Use `gate` when you need **approval** that agents cannot bypass.
+
+#### Gate Properties
+
+| Property | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `prompt` | Yes | - | Message shown to the approver |
+| `allow` | No | `["user"]` | Who can resolve (forward-compatible) |
+| `timeout` | No | `"30m"` | How long to wait before auto-reject |
+| `on_reject` | No | `throw` | Action on rejection/timeout |
+
+#### Timeout Behavior
+
+When a gate's timeout expires:
+1. Status changes to `timeout`
+2. `on_reject` action is triggered
+3. Gate cannot be approved after timeout
+
+**Timeout = rejection.** There is no auto-approve. Gates fail closed.
+
+#### on_reject Actions
+
+| Action | Behavior |
+|--------|----------|
+| `throw` | Raise an error (default) |
+| `throw "message"` | Raise an error with custom message |
+| `retry` | Re-prompt the same gate |
+| `continue` | Skip the gate and continue |
+| `session "prompt"` | Spawn a handler session |
+
+#### Gate Execution
+
+When the VM encounters a gate:
+
+1. **Create gate record** with pending status
+2. **Pause execution** - the VM cannot proceed
+3. **Wait for external resolution** (approve/reject/timeout)
+4. On **approval**: continue to next statement
+5. On **rejection/timeout**: execute `on_reject` action
+
+Gates are resolved externally via:
+- CLI: `prose approve RUN_ID GATE_ID` / `prose reject RUN_ID GATE_ID`
+- Database: UPDATE gates SET status='approved' WHERE id=...
+- Webhook/API: External systems can resolve gates programmatically
+
+#### Gate Examples
+
+```prose
+# Basic gate
+gate security_review:
+  prompt: "Security review passed?"
+  timeout: "1h"
+
+# Gate with retry on rejection
+gate confirm_delete:
+  prompt: "Delete all data?"
+  on_reject: retry
+
+# Gate with fallback session
+gate budget_approval:
+  prompt: "Approve $10k budget?"
+  timeout: "24h"
+  on_reject: session "Notify stakeholders of rejection"
+
+# Optional gate (continues on rejection)
+gate optional_review:
+  prompt: "Review before proceeding?"
+  timeout: "5m"
+  on_reject: continue
+```
 
 ### Output Bindings
 
