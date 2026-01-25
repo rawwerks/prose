@@ -2916,8 +2916,9 @@ The sqlite backend enables:
 - **Cross-session approval**: Resolve gates from a different terminal
 - **Audit queries**: `SELECT * FROM gates WHERE resolved_by = 'user'`
 - **Pending gate discovery**: `SELECT * FROM gates WHERE status = 'pending'`
+- **Compliance audit trail**: Append-only `gate_audit_log` table for forensic analysis
 
-See `state/sqlite.md` for the full `gates` table schema and query patterns.
+See `state/sqlite.md` for the full `gates` table schema, `gate_audit_log` schema, and query patterns.
 
 ### Validation Rules
 
