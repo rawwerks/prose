@@ -1,0 +1,23 @@
+# Approval Gate Rejection Test
+# Tests that rejection properly throws and is caught
+
+session "Starting rejection test"
+
+try:
+  approve reject_test:
+    prompt: """
+      REJECTION TEST
+
+      Please REJECT this gate to test error handling.
+      Select: Reject
+    """
+    on_reject: throw "User rejected - test confirms on_reject:throw works"
+
+  # Should NOT reach here
+  session "ERROR: Should not reach this after rejection"
+
+catch as err:
+  session "SUCCESS: Rejection caught correctly"
+    context: err
+
+session "Test complete - rejection handling verified"

@@ -1,0 +1,24 @@
+# Approval Gate Retry Test
+# Tests that on_reject: retry label jumps back to regenerate
+
+session "Starting retry test"
+
+let attempt = 0
+
+@generate_proposal
+let attempt = attempt + 1
+let proposal = session "Generate proposal attempt #{attempt}"
+
+approve proposal_review:
+  prompt: """
+    RETRY TEST - Attempt {attempt}
+
+    Proposal: {proposal}
+
+    If attempt 1: REJECT to trigger retry
+    If attempt 2: APPROVE to complete test
+  """
+  on_reject: retry generate_proposal
+
+session "SUCCESS: Proposal approved on attempt {attempt}"
+  context: { attempt, proposal }
