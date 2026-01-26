@@ -1,0 +1,69 @@
+# exec-dogfood.prose
+# End-to-end test of the exec primitive
+# Both Claude and Codex will run this as the OpenProse VM
+
+agent analyst:
+  model: haiku
+  prompt: "You summarize command outputs concisely. Report pass/fail for each test."
+
+# --- Test 1: Simple exec (side-effect only) ---
+exec "echo 'Test 1: simple exec works'"
+
+# --- Test 2: Exec with binding ---
+let kernel = exec "uname -r"
+
+# --- Test 3: Exec with on-fail continue ---
+let bad = exec "ls /nonexistent_path_12345"
+  on-fail: "continue"
+
+# --- Test 4: Exec with on-fail ignore ---
+let ignored = exec "false"
+  on-fail: "ignore"
+
+# --- Test 5: Exec with timeout ---
+let fast = exec "echo 'done quickly'"
+  timeout: "10s"
+
+# --- Test 6: String interpolation in exec ---
+let branch = exec "git -C /home/raw/Documents/GitHub/prose rev-parse --abbrev-ref HEAD"
+let log = exec "git -C /home/raw/Documents/GitHub/prose log --oneline -3 {branch}"
+
+# --- Test 7: Multi-line exec ---
+let multiline = exec """
+echo 'line1' &&
+echo 'line2' &&
+echo 'line3'
+"""
+
+# --- Test 8: Parallel exec ---
+parallel:
+  wc_result = exec "wc -l /home/raw/Documents/GitHub/prose/README.md"
+  date_result = exec "date -u +%Y-%m-%dT%H:%M:%S"
+  whoami_result = exec "whoami"
+
+# --- Test 9: Try/catch with exec ---
+try:
+  exec "cat /root/secret_file_that_does_not_exist"
+catch as err:
+  let recovery = exec "echo 'Caught exec error gracefully'"
+
+# --- Test 10: Exec result as session context ---
+let git_status = exec "git -C /home/raw/Documents/GitHub/prose status --short"
+
+output summary = session: analyst
+  prompt: """
+  Summarize these exec dogfood test results. For each test (1-10), report PASS or FAIL:
+
+  Test 1 (simple exec): should have printed a message
+  Test 2 (binding): kernel={kernel}
+  Test 3 (on-fail continue): bad={bad} (should contain error but not crash)
+  Test 4 (on-fail ignore): ignored={ignored} (should have empty stdout)
+  Test 5 (timeout): fast={fast}
+  Test 6 (interpolation): branch={branch}, log={log}
+  Test 7 (multi-line): multiline={multiline}
+  Test 8 (parallel): wc={wc_result}, date={date_result}, whoami={whoami_result}
+  Test 9 (try/catch): recovery={recovery}
+  Test 10 (context passing): git_status={git_status}
+
+  End with an overall verdict: ALL PASS or list failures.
+  """

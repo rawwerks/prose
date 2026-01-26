@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Exec Primitive** (`exec`): Direct shell command execution without spawning subagents
+  - Zero LLM cost for deterministic operations (builds, syncs, git commands)
+  - Properties: `timeout` (duration), `on-fail` (`throw`/`continue`/`ignore`), `cwd`
+  - Full interpolation support with security warnings
+  - Parallel exec in `parallel` blocks
+  - Composes with `try/catch`, `gate`, and `session` context passing
+  - VM writes bindings directly (exception to subagent binding ownership)
+  - Validated by dual-VM dogfood testing (Claude Opus 4.5 + OpenAI Codex GPT-5.2)
+
 - **Approval Gates** (`approve gate:`): Deterministic user checkpoints that cannot be bypassed by agents
   - `prompt`: Message shown to user describing what is being approved
   - `allow`: List of principals who can approve (default: `["user"]`)

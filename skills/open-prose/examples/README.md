@@ -132,6 +132,12 @@ These examples demonstrate workflows using OpenProse's full feature set.
 | `57-audit-log-test.prose`                    | Tests gate_audit_log captures all events                             |
 | `58-gate-vs-input-comparison.prose`          | Demonstrates gate vs input: gate blocks, input allows discretion     |
 
+### Exec (59)
+
+| File                                         | Description                                                          |
+| -------------------------------------------- | -------------------------------------------------------------------- |
+| `59-exec-deploy-pipeline.prose`              | Deployment pipeline: exec for deterministic ops, session for reasoning |
+
 ## The Architect By Simulation Pattern
 
 The architect-by-simulation pattern is for designing systems by "implementing" them through reasoning. Instead of writing code, each phase produces specification documents that the next phase builds upon.
@@ -380,6 +386,17 @@ choice **criteria**:
     session "..."
   option "Label B":
     session "..."
+```
+
+### Exec
+
+```prose
+exec "npm install"                    # Run shell command directly (no AI)
+let out = exec "git status"           # Bind output to variable
+exec "npm test"                       # Throws on non-zero exit (default)
+  on-fail: "continue"                 # continue, ignore, throw
+  timeout: "5m"                       # Max duration
+  cwd: "/project"                     # Working directory
 ```
 
 ### Gates

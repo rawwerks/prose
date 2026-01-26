@@ -1,0 +1,121 @@
+# Deployment Pipeline with Exec
+# Demonstrates exec for deterministic commands vs session for reasoning
+#
+# WHY EXEC EXISTS:
+# Without exec, every shell command spawns a full subagent (~5-30s, ~2k-10k tokens).
+# A deployment pipeline with 8 shell commands would cost ~80k tokens and ~2 minutes
+# just to type commands the VM could run directly in <8 seconds at zero token cost.
+#
+# RULE OF THUMB:
+# - exec: "I know the exact command and just need the output"
+# - session: "I need an AI to interpret, decide, or use multiple tools"
+
+# ============================================================
+# Phase 1: Pre-flight checks (parallel exec for speed)
+# ============================================================
+
+# These checks are independent and deterministic — perfect for parallel exec.
+# Without exec, this would spawn 4 subagents sequentially (~60s, ~20k tokens).
+# With parallel exec: <2s, 0 tokens.
+
+parallel (on-fail: "continue"):
+  git_status = exec "git status --porcelain"
+  git_branch = exec "git rev-parse --abbrev-ref HEAD"
+  node_ver = exec "node --version"
+  disk_space = exec "df -h / | tail -1"
+
+# NOW use a session — only AI can interpret these raw outputs together
+let preflight = session "Analyze these pre-flight results. Report any issues:
+  - Are there uncommitted changes? (git_status)
+  - Are we on the correct branch for deployment? (git_branch)
+  - Is the Node.js version compatible? (node_ver)
+  - Is disk space sufficient for a build? (disk_space)
+  Flag any blockers."
+  context: { git_status, git_branch, node_ver, disk_space }
+
+if **preflight indicates blockers**:
+  throw "Pre-flight failed — resolve issues before deploying"
+
+# ============================================================
+# Phase 2: Build and test (exec with on-fail: continue)
+# ============================================================
+
+# Install dependencies — deterministic, no AI needed
+exec "npm ci --prefer-offline"
+  timeout: "2m"
+
+# Run tests with on-fail: continue — we want the output even if tests fail.
+# The exit code and stderr are captured in the binding for the session to analyze.
+let tests = exec "npm test -- --reporter=json 2>&1"
+  on-fail: "continue"
+  timeout: "5m"
+
+# Run linter in parallel with type checking — both are independent
+parallel (on-fail: "continue"):
+  lint = exec "npm run lint -- --format=json 2>&1"
+  typecheck = exec "npm run typecheck 2>&1"
+
+# Session interprets ALL results — this is where AI adds value.
+# The session sees full binding files including exit_code and stderr.
+let quality = session "Analyze the test, lint, and typecheck results.
+  Summarize:
+  1. How many tests passed/failed?
+  2. Are there lint errors (not just warnings)?
+  3. Are there type errors?
+  Verdict: is this build safe to deploy?"
+  context: { tests, lint, typecheck }
+
+if **quality verdict says not safe to deploy**:
+  throw "Quality checks failed — see analysis above"
+
+# Build the production bundle — deterministic
+let build = exec "npm run build 2>&1"
+  timeout: "3m"
+
+# ============================================================
+# Phase 3: Gate before destructive operations
+# ============================================================
+
+# Capture what we are about to deploy
+const git_sha = exec "git rev-parse --short HEAD"
+const build_size = exec "du -sh dist/ | cut -f1"
+
+# Human must approve before anything destructive happens
+gate confirm_deploy:
+  prompt: "Deploy {git_sha} ({build_size}) to production?"
+  timeout: "10m"
+  on_reject: throw "Deployment cancelled by operator"
+
+# ============================================================
+# Phase 4: Deploy (sequential exec with error handling)
+# ============================================================
+
+try:
+  # Tag the release — deterministic git operation
+  exec "git tag -a deploy-$(date +%Y%m%d-%H%M%S) -m 'Production deploy'"
+
+  # Push the tag
+  exec "git push --tags"
+
+  # Run the actual deployment command
+  let deploy_output = exec "npm run deploy:production 2>&1"
+    timeout: "5m"
+
+  # Post-deploy health check
+  let health = exec "curl -sf https://myapp.example.com/health || echo 'UNHEALTHY'"
+    timeout: "30s"
+
+  # AI evaluates the deploy outcome
+  output summary = session "Summarize the deployment:
+    - Deploy output: was it successful?
+    - Health check: is the service responding?
+    - Git SHA deployed: {git_sha}
+    Write a brief deployment report."
+    context: { deploy_output, health, quality }
+
+catch as err:
+  # If deploy fails, AI diagnoses — this requires judgment
+  session "The deployment failed. Analyze the error and suggest recovery steps.
+    Do NOT attempt rollback without operator approval."
+    context: err
+  throw "Deployment failed — manual intervention required"

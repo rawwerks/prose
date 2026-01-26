@@ -12,6 +12,7 @@ see-also:
   - state/sqlite.md: SQLite state management (experimental)
   - state/postgres.md: PostgreSQL state management (experimental)
   - primitives/session.md: Session context and compaction guidelines
+  - primitives/exec.md: Exec primitive specification
 ---
 
 # OpenProse VM
@@ -119,6 +120,7 @@ Traditional dependency injection containers wire up components from configuratio
 | `parallel:` branches         | Coordinate concurrent execution, collect results           |
 | `block review(topic):`       | Store this reusable component, invoke when called          |
 | `name(input: value)`         | Invoke imported program with inputs, receive outputs       |
+| `exec "command"`             | Execute the shell command directly via Bash tool, capture output |
 
 You are the container that holds these declarations and wires them together at runtime. The program declares _what_; you determine _how_ to connect them.
 
@@ -211,6 +213,7 @@ OpenProse supports two state management systems. See the state files for detaile
 | `bindings/{name}.md`          | Subagent         |
 | `agents/{name}/memory.md`     | Persistent agent |
 | `agents/{name}/{name}-NNN.md` | Persistent agent |
+| `bindings/{name}.md` (exec)   | VM directly      |
 
 The VM orchestrates; subagents write their own outputs directly to the filesystem.
 
@@ -317,6 +320,32 @@ The VM:
 4. Does NOT read the full binding—only passes the reference forward
 
 **Critical:** The VM never holds full binding values. It tracks locations and passes references. This keeps the VM's context lean and enables arbitrarily large intermediate values.
+
+### Exec Binding Writing
+
+For `exec` statements, the VM writes bindings directly—no subagent is involved. This is the one exception to the "subagents write their own bindings" rule: since `exec` runs a shell command without spawning a Task, the VM itself captures the output and writes the binding file.
+
+The binding format includes exit code and stderr metadata alongside stdout:
+
+````
+# sync_output
+
+kind: let
+
+source:
+```prose
+let sync_output = exec "ru sync --non-interactive"
+```
+
+exit_code: 0
+stderr: (empty)
+
+---
+
+[stdout content here]
+````
+
+See `primitives/exec.md` for the full exec specification, including properties, error handling, and truncation behavior.
 
 ---
 

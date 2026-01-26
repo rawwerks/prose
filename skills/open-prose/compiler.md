@@ -153,6 +153,7 @@ The following features are implemented:
 | Persistent agents      | Implemented | `persist: true` or `persist: project`          |
 | Resume statement       | Implemented | `resume: agent` to continue with memory        |
 | Gates                  | Implemented | `gate id:` with prompt, allow, timeout, on_reject |
+| Exec primitive         | Implemented | exec "command" with on-fail, timeout, cwd |
 
 ---
 
@@ -2785,6 +2786,249 @@ on_reject_action ::= "throw" [string]
 
 ---
 
+## Exec Statement
+
+The `exec` primitive enables direct shell command execution by the VM without spawning a subagent. For deterministic operations where no AI reasoning is needed—syncing tools, running builds, querying databases—`exec` eliminates the overhead of a full session.
+
+### Syntax
+
+#### Simple Exec
+
+```prose
+exec "command string"
+```
+
+#### Exec with Binding
+
+```prose
+let result = exec "command string"
+const snapshot = exec "git rev-parse HEAD"
+output build_log = exec "make build 2>&1"
+```
+
+#### Exec with Properties
+
+```prose
+let result = exec "npm test"
+  timeout: "5m"
+  on-fail: "continue"
+```
+
+#### Multi-line Commands
+
+```prose
+exec """
+cd /project &&
+npm install &&
+npm run build
+"""
+```
+
+### Properties
+
+| Property   | Required | Default     | Description                                           |
+| ---------- | -------- | ----------- | ----------------------------------------------------- |
+| `timeout`  | No       | `"2m"`      | Max duration before the command is killed              |
+| `on-fail`  | No       | `"throw"`   | Action on non-zero exit: "throw", "continue", "ignore" |
+| `cwd`      | No       | (inherited) | Working directory for the command                     |
+
+Property naming follows existing conventions: `on-fail` matches `parallel (on-fail: ...)` (kebab-case), and `timeout` uses duration strings matching `gate` (e.g., `"30s"`, `"5m"`, `"1h"`).
+
+### on-fail Actions
+
+| Action       | Behavior                                                     |
+| ------------ | ------------------------------------------------------------ |
+| `"throw"`    | Raise an error with stderr and exit code (default)           |
+| `"continue"` | Bind the full result (stdout, stderr, exit_code); do not error |
+| `"ignore"`   | Bind stdout only; omit stderr and exit_code from binding     |
+
+### Execution Semantics
+
+When the OpenProse VM encounters an `exec` statement:
+
+1. **Resolve Command**: Evaluate the command string (including interpolation if present)
+2. **Execute Directly**: Run via the VM's shell execution capability—**NOT** via Task/subagent
+3. **Capture Output**: Collect stdout, stderr, and exit code
+4. **Truncate**: If stdout or stderr exceeds 30,000 characters, truncate to 30,000 and set `stdout_truncated` or `stderr_truncated` in the binding metadata
+5. **Handle Exit Code**: If non-zero, apply `on-fail` policy
+6. **Bind Result**: If used in a binding, the VM writes the output directly to `bindings/`
+7. **Continue**: Proceed to next statement
+
+### Execution Flow
+
+```
+OpenProse VM                    Shell
+    |                              |
+    |  shell command               |
+    |----------------------------->|
+    |                              |
+    |  stdout + stderr + exit      |
+    |<-----------------------------|
+    |                              |
+    |  write binding, continue     |
+    v                              v
+```
+
+### Key Difference: exec vs session
+
+| Aspect         | `session`                           | `exec`                              |
+| -------------- | ----------------------------------- | ----------------------------------- |
+| Executor       | Spawns subagent via Task tool       | VM runs directly (shell tool)       |
+| Cost           | Full LLM call (tokens + latency)    | Zero LLM cost (shell only)          |
+| Output         | AI-generated text                   | Raw command output (string)         |
+| Intelligence   | Subagent reasons, uses tools        | No intelligence—deterministic       |
+| Use case       | Tasks requiring judgment            | Deterministic operations            |
+| Binding writer | Subagent writes its own binding     | VM writes the binding               |
+| Permissions    | Governed by agent `permissions:`    | VM's own permissions (parent env)   |
+
+### Result Value
+
+An exec result is a **string** containing stdout. Metadata (stderr, exit code) is stored in the binding file and available when the binding is passed as context to a session.
+
+When exec is used as a bare statement without a binding (`exec "cmd"`), no binding file is created—the command runs for its side effects only, and the VM checks the exit code for `on-fail` policy.
+
+There is no property access syntax in OpenProse—you cannot write `result.exit_code`. Instead, use discretion markers to evaluate exec results:
+
+```prose
+let test = exec "npm test"
+  on-fail: "continue"
+
+# The VM reads the binding (including exit_code metadata) and evaluates
+if **the test output indicates failures**:
+  session "Diagnose test failures"
+    context: test
+```
+
+When an exec binding is passed via `context:`, the receiving session sees the full binding file including exit code and stderr metadata, enabling informed reasoning.
+
+### Shell Semantics
+
+Each `exec` is a single shell invocation. Understanding what persists and what doesn't:
+
+| Aspect              | Persists across exec calls? | Notes                                    |
+| ------------------- | --------------------------- | ---------------------------------------- |
+| Working directory   | Yes                         | `cd` in one exec affects subsequent ones |
+| Shell variables     | No                          | Each exec starts a fresh shell           |
+| Environment variables| Yes                        | Inherited from VM's environment          |
+| Aliases/functions   | No                          | Not loaded between exec calls            |
+
+This matches the behavior of the underlying shell tool in most agent substrates (e.g., Claude Code's Bash tool persists cwd but not shell state).
+
+#### Parallel cwd Isolation
+
+Inside a `parallel` block, each branch operates on a **snapshot** of the working directory at fork time. A `cd` inside one parallel branch does not affect other branches. After the parallel block completes, the working directory reverts to its pre-parallel value. This prevents race conditions from concurrent cwd mutations.
+
+### Security Model
+
+The `exec` primitive runs commands with the **VM's own permissions**—the parent environment's sandbox and approval rules. This is a direct tool call, not a delegated task.
+
+Implications:
+
+- Commands inherit the VM's working directory, environment, and file access
+- Agent-level `permissions:` blocks do **not** apply (those govern subagent sessions, not the VM itself)
+- The VM's own tool approval policies (hooks, sandbox) still apply
+- The host environment's existing safety checks remain in effect
+
+**Recommended practice**: Use `gate` before destructive or irreversible `exec` commands:
+
+```prose
+gate confirm_deploy:
+  prompt: "About to deploy to production. Continue?"
+  timeout: "5m"
+
+exec "kamal deploy"
+  timeout: "10m"
+```
+
+### Examples
+
+#### Basic Exec
+
+```prose
+exec "npm install"
+  timeout: "2m"
+
+let test = exec "npm test"
+  on-fail: "continue"
+
+let lint = exec "npm run lint"
+  on-fail: "continue"
+
+if **tests or lint indicate failures**:
+  session "Diagnose failures and suggest fixes"
+    context: { test, lint }
+else:
+  exec "npm run build"
+```
+
+#### Error Handling
+
+```prose
+# Default: throws on failure
+exec "make build"
+
+# With try/catch
+try:
+  exec "make build"
+catch as err:
+  session "The build failed, diagnose the error"
+    context: err
+
+# Ignore failures (e.g., cleanup commands)
+exec "rm -f /tmp/cache"
+  on-fail: "ignore"
+
+# Continue with error info available
+let result = exec "npm test"
+  on-fail: "continue"
+# result binding includes exit_code metadata; program continues
+```
+
+#### Parallel Exec
+
+```prose
+parallel (on-fail: "continue"):
+  test = exec "npm test"
+  lint = exec "npm run lint"
+  typecheck = exec "npm run typecheck"
+  security = exec "npm audit"
+
+session "Summarize CI results and recommend next steps"
+  context: { test, lint, typecheck, security }
+```
+
+#### String Interpolation
+
+```prose
+let branch = exec "git rev-parse --abbrev-ref HEAD"
+exec "git push origin {branch}"
+```
+
+**Security note**: Interpolated values are inserted directly into the shell command string. Variable values can contain shell metacharacters. Use with trusted values only.
+
+### Validation Rules
+
+| Code | Check                            | Severity | Message                                           |
+| ---- | -------------------------------- | -------- | ------------------------------------------------- |
+| E050 | Empty command string             | Error    | exec command cannot be empty                      |
+| E051 | Invalid timeout format           | Error    | timeout must be a duration (e.g., "30s", "5m")    |
+| E052 | Invalid on-fail value            | Error    | on-fail must be "throw", "continue", or "ignore"  |
+| E053 | Undefined interpolation variable | Error    | Variable {name} is not defined                    |
+| W050 | Timeout exceeds 10m              | Warning  | exec timeout exceeds 10 minutes                   |
+| W051 | Interpolation in exec command    | Warning  | Interpolated exec commands may have injection risk |
+
+### Syntax Reference
+
+```
+exec_statement ::= "exec" string ( NEWLINE INDENT exec_property* DEDENT )?
+
+exec_property ::= "timeout" ":" string
+               | "on-fail" ":" string
+               | "cwd" ":" string
+```
+
+---
+
 ## Execution Model
 
 OpenProse uses a two-phase execution model.
@@ -3049,7 +3293,7 @@ statement   → useStatement | inputDecl | agentDef | session | resumeStmt
             | letBinding | constBinding | assignment | outputBinding
             | parallelBlock | repeatBlock | forEachBlock | loopBlock
             | tryBlock | choiceBlock | ifStatement | doBlock | blockDef
-            | throwStatement | gateStatement | comment
+            | throwStatement | gateStatement | execStatement | comment
 
 # Program Composition
 useStatement → "use" string ( "as" IDENTIFIER )?
@@ -3108,6 +3352,12 @@ onRejectAction → "throw" string?
                | "continue"
                | "session" string
 
+# Exec
+execStatement → "exec" string ( NEWLINE INDENT execProperty* DEDENT )?
+execProperty  → "timeout:" string
+              | "on-fail:" string
+              | "cwd:" string
+
 # Composition
 doBlock     → "do" ( ":" NEWLINE INDENT statement* DEDENT | IDENTIFIER args? )
 args        → "(" expression ( "," expression )* ")"
@@ -3129,7 +3379,7 @@ constBinding → "const" IDENTIFIER "=" expression
 assignment  → IDENTIFIER "=" expression
 
 # Expressions
-expression  → session | doBlock | parallelBlock | repeatBlock | forEachBlock
+expression  → session | execStatement | doBlock | parallelBlock | repeatBlock | forEachBlock
             | loopBlock | arrowExpr | pipeExpr | programCall | string | IDENTIFIER | array | objectContext
 
 # Pipelines
