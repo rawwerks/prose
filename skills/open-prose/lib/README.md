@@ -1,6 +1,8 @@
 # OpenProse Standard Library
 
-Core programs that ship with OpenProse. Production-quality, well-tested programs for common tasks.
+Local analysis and improvement programs that ship with OpenProse. Production-quality, well-tested programs for evaluating runs, improving code, and managing memory.
+
+For programs that participate in the distributed Constellation, see `common/README.md`.
 
 ## Programs
 
