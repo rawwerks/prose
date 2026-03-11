@@ -1,0 +1,89 @@
+name: openprose-spec-harness
+
+on:
+  pull_request:
+    paths:
+      - ".github/CODEOWNERS"
+      - ".github/workflows/openprose-spec-harness.yml"
+      - "skills/open-prose/compiler.md"
+      - "skills/open-prose/prose.md"
+      - "skills/open-prose/spec-version.json"
+      - "skills/open-prose/conformance/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/CODEOWNERS"
+      - ".github/workflows/openprose-spec-harness.yml"
+      - "skills/open-prose/compiler.md"
+      - "skills/open-prose/prose.md"
+      - "skills/open-prose/spec-version.json"
+      - "skills/open-prose/conformance/**"
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate spec contract files
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          spec = Path("skills/open-prose/spec-version.json")
+          manifest = Path("skills/open-prose/conformance/manifest.json")
+
+          spec_data = json.loads(spec.read_text())
+          manifest_data = json.loads(manifest.read_text())
+
+          assert spec_data["language"] == "openprose"
+          assert spec_data["default_profile"] in {"strict", "compat"}
+          assert Path(spec_data["compiler_spec"]).exists()
+          assert Path(spec_data["vm_spec"]).exists()
+          assert Path(spec_data["conformance_manifest"]).exists()
+          assert manifest_data["language"] == "openprose"
+          assert manifest_data["default_profile"] in {"strict", "compat"}
+          assert manifest_data["cases"], "conformance suite must contain at least one case"
+
+          for case in manifest_data["cases"]:
+            case_path = manifest.parent / case["path"]
+            assert case_path.exists(), f"missing conformance case: {case_path}"
+            for profile in ("strict", "compat"):
+              assert profile in case["expect"], f"missing {profile} expectation for {case['id']}"
+          PY
+
+  conformance:
+    if: ${{ secrets.OPENPROSE_LINT_REPO_TOKEN != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout spec repo
+        uses: actions/checkout@v4
+
+      - name: Checkout linter repo
+        uses: actions/checkout@v4
+        with:
+          repository: rawwerks/openprose-lint
+          path: openprose-lint
+          token: ${{ secrets.OPENPROSE_LINT_REPO_TOKEN }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run strict conformance
+        run: cargo run --manifest-path openprose-lint/Cargo.toml -- conformance --manifest skills/open-prose/conformance/manifest.json --profile strict
+
+      - name: Run compat examples smoke test
+        run: cargo run --manifest-path openprose-lint/Cargo.toml -- lint --profile compat skills/open-prose/examples
+
+  conformance-secret-missing:
+    if: ${{ secrets.OPENPROSE_LINT_REPO_TOKEN == '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain skipped cross-repo gate
+        run: |
+          echo "OPENPROSE_LINT_REPO_TOKEN is not configured."
+          echo "Manifest integrity was checked, but cross-repo conformance execution is skipped."
+          echo "Configure the token to make the spec repo CI run the pinned linter directly."

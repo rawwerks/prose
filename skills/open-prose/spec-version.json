@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "language": "openprose",
+  "language_version": "0.8.1",
+  "status": "draft",
+  "default_profile": "strict",
+  "profiles": [
+    "strict",
+    "compat"
+  ],
+  "compiler_spec": "skills/open-prose/compiler.md",
+  "vm_spec": "skills/open-prose/prose.md",
+  "conformance_manifest": "skills/open-prose/conformance/manifest.json",
+  "governance": {
+    "examples_are_non_normative": true,
+    "normative_changes_require_conformance_updates": true,
+    "stable_releases_require_strict_conformance_green": true
+  }
+}
