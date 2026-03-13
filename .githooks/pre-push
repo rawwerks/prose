@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${OPENPROSE_SKIP_PUSH_HOOK:-}" == "1" ]]; then
+  echo "[pre-push] OPENPROSE_SKIP_PUSH_HOOK=1, skipping checks"
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+echo "[pre-push] prose: validating spec contract files"
+python - <<'PY'
+import json
+from pathlib import Path
+
+spec = Path("skills/open-prose/spec-version.json")
+manifest = Path("skills/open-prose/conformance/manifest.json")
+
+spec_data = json.loads(spec.read_text())
+manifest_data = json.loads(manifest.read_text())
+
+assert spec_data["language"] == "openprose"
+assert spec_data["default_profile"] in {"strict", "compat"}
+assert Path(spec_data["compiler_spec"]).exists()
+assert Path(spec_data["vm_spec"]).exists()
+assert Path(spec_data["conformance_manifest"]).exists()
+assert manifest_data["language"] == "openprose"
+assert manifest_data["default_profile"] in {"strict", "compat"}
+assert manifest_data["cases"], "conformance suite must contain at least one case"
+
+for case in manifest_data["cases"]:
+    case_path = manifest.parent / case["path"]
+    assert case_path.exists(), f"missing conformance case: {case_path}"
+    for profile in ("strict", "compat"):
+        assert profile in case["expect"], f"missing {profile} expectation for {case['id']}"
+PY
+
+linter_root="${OPENPROSE_LINT_REPO:-$repo_root/../openprose-lint}"
+
+if [[ ! -f "$linter_root/Cargo.toml" ]]; then
+  echo "[pre-push] expected openprose-lint repo at: $linter_root"
+  echo "[pre-push] set OPENPROSE_LINT_REPO=/path/to/openprose-lint if needed"
+  exit 1
+fi
+
+echo "[pre-push] prose: strict conformance via openprose-lint"
+cargo run --manifest-path "$linter_root/Cargo.toml" -- conformance --manifest "$repo_root/skills/open-prose/conformance/manifest.json" --profile strict
+
+echo "[pre-push] prose: compat example smoke via openprose-lint"
+cargo run --manifest-path "$linter_root/Cargo.toml" -- lint --profile compat "$repo_root/skills/open-prose/examples"
