@@ -218,10 +218,10 @@ Run with `--state=postgres` for true concurrent writes, network access, and exte
 
 **⚠️ Bring Your Own Database:** You are responsible for providing and managing your PostgreSQL instance. OpenProse does not provision databases for you.
 
-**⚠️ Security Warning:** Database credentials in `OPENPROSE_POSTGRES_URL` are passed to subagent sessions and will be visible in agent context/logs. **Treat these credentials as non-sensitive.** Use:
+**⚠️ Security Warning:** Treat database credentials in `OPENPROSE_POSTGRES_URL` as sensitive. Do not expose them in agent prompts, context, logs, source control, or workspace artifacts. Use:
 - A dedicated database for OpenProse (not your production DB)
 - A user with minimal privileges (just the `openprose` schema)
-- Credentials you're comfortable being logged
+- A secret-management mechanism or protected runtime environment; never credentials that are safe to disclose
 
 **Setup:**
 
