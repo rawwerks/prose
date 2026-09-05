@@ -218,10 +218,10 @@ Run with `--state=postgres` for true concurrent writes, network access, and exte
 
 **⚠️ Bring Your Own Database:** You are responsible for providing and managing your PostgreSQL instance. OpenProse does not provision databases for you.
 
-**⚠️ Security Warning:** Database credentials in `OPENPROSE_POSTGRES_URL` are passed to subagent sessions and will be visible in agent context/logs. **Treat these credentials as non-sensitive.** Use:
+**⚠️ Security Warning:** Database credentials in `OPENPROSE_POSTGRES_URL` are passed to subagent sessions and may be visible in agent context or logs. **Treat these credentials as sensitive.** Use:
 - A dedicated database for OpenProse (not your production DB)
 - A user with minimal privileges (just the `openprose` schema)
-- Credentials you're comfortable being logged
+- A dedicated credential that you can rotate if it is exposed in agent context or logs
 
 **Setup:**
 
@@ -231,12 +231,12 @@ Run with `--state=postgres` for true concurrent writes, network access, and exte
 | Linux | `apt install postgresql` |
 | Windows | PostgreSQL installer or Docker |
 | Cloud | Neon, Supabase, Railway, etc. |
-| Docker | `docker run -d --name prose-pg -e POSTGRES_DB=prose -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres:16` |
+| Docker | `export POSTGRES_PASSWORD="$(openssl rand -base64 32)"; docker run -d --name prose-pg -e POSTGRES_DB=prose -e POSTGRES_PASSWORD -p 127.0.0.1:5432:5432 postgres:16` |
 
 **Configure connection:**
 ```bash
 mkdir -p .prose
-echo "OPENPROSE_POSTGRES_URL=postgresql://user:pass@localhost:5432/prose" >> .prose/.env
+printf 'OPENPROSE_POSTGRES_URL=postgresql://postgres:%s@localhost:5432/prose\n' "$POSTGRES_PASSWORD" >> .prose/.env
 ```
 
 PostgreSQL state is for power users who need concurrent parallel writes or external dashboard integration.
