@@ -1,1 +1,6 @@
 .prose
+
+# Local runtime configuration may contain credentials or service endpoints.
+.env
+.env.*
+!.env.example
