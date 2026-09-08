@@ -193,7 +193,11 @@ OpenProse supports three state management approaches:
 
 **Experimental PostgreSQL mode:** If the user passes `--state=postgres` or says "use postgres state":
 
-**⚠️ Security Note:** Database credentials in `OPENPROSE_POSTGRES_URL` are passed to subagent sessions and visible in logs. Advise users to use a dedicated database with limited-privilege credentials. See `state/postgres.md` for secure setup guidance.
+**⚠️ Security Note:** `OPENPROSE_POSTGRES_URL` may be exposed to subagent
+sessions or logs. Do not use a production, administrator, or otherwise sensitive
+credential. Require a dedicated database, a minimum-privilege role, a unique
+rotatable credential, and a loopback-only listener. See `state/postgres.md` for
+secure setup guidance.
 
 1. **Check for connection configuration first:**
    ```bash
@@ -216,11 +220,11 @@ OpenProse supports three state management approaches:
    1. Set up a PostgreSQL database (Docker, local, or cloud)
    2. Add connection string to .prose/.env:
 
-      echo "OPENPROSE_POSTGRES_URL=postgresql://user:pass@localhost:5432/prose" >> .prose/.env
+      echo "OPENPROSE_POSTGRES_URL=postgresql://openprose_agent:<password>@localhost:5432/prose" >> .prose/.env
 
    Quick Docker setup:
-      docker run -d --name prose-pg -e POSTGRES_DB=prose -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres:16
-      echo "OPENPROSE_POSTGRES_URL=postgresql://postgres@localhost:5432/prose" >> .prose/.env
+      docker run -d --name prose-pg -e POSTGRES_DB=prose -e POSTGRES_USER=openprose_agent -e POSTGRES_PASSWORD="$(openssl rand -base64 32)" -p 127.0.0.1:5432:5432 postgres:16
+      echo "OPENPROSE_POSTGRES_URL=postgresql://openprose_agent:<password>@localhost:5432/prose" >> .prose/.env
 
    See state/postgres.md for detailed setup options.
    ```

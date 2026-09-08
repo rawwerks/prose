@@ -218,10 +218,15 @@ Run with `--state=postgres` for true concurrent writes, network access, and exte
 
 **⚠️ Bring Your Own Database:** You are responsible for providing and managing your PostgreSQL instance. OpenProse does not provision databases for you.
 
-**⚠️ Security Warning:** Database credentials in `OPENPROSE_POSTGRES_URL` are passed to subagent sessions and will be visible in agent context/logs. **Treat these credentials as non-sensitive.** Use:
+**⚠️ Security Warning:** PostgreSQL credentials may be exposed to spawned agent
+sessions and their logs. Do **not** use a production, administrator, or otherwise
+sensitive credential with this experimental backend. Use:
 - A dedicated database for OpenProse (not your production DB)
-- A user with minimal privileges (just the `openprose` schema)
-- Credentials you're comfortable being logged
+- A user with the minimum privileges required for the `openprose` schema
+- A unique, rotatable credential with no access to unrelated databases or schemas
+
+Keep the database listener private. Never use PostgreSQL's `trust` authentication
+for this setup and do not publish its port on non-loopback interfaces.
 
 **Setup:**
 
@@ -231,12 +236,12 @@ Run with `--state=postgres` for true concurrent writes, network access, and exte
 | Linux | `apt install postgresql` |
 | Windows | PostgreSQL installer or Docker |
 | Cloud | Neon, Supabase, Railway, etc. |
-| Docker | `docker run -d --name prose-pg -e POSTGRES_DB=prose -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres:16` |
+| Docker | `docker run -d --name prose-pg -e POSTGRES_DB=prose -e POSTGRES_USER=openprose_agent -e POSTGRES_PASSWORD="$(openssl rand -base64 32)" -p 127.0.0.1:5432:5432 postgres:16` |
 
 **Configure connection:**
 ```bash
 mkdir -p .prose
-echo "OPENPROSE_POSTGRES_URL=postgresql://user:pass@localhost:5432/prose" >> .prose/.env
+echo "OPENPROSE_POSTGRES_URL=postgresql://openprose_agent:<password>@localhost:5432/prose" >> .prose/.env
 ```
 
 PostgreSQL state is for power users who need concurrent parallel writes or external dashboard integration.

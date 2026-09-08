@@ -62,17 +62,23 @@ PostgreSQL state provides:
 
 ## Security Warning
 
-**⚠️ Credentials are visible to subagents.** The `OPENPROSE_POSTGRES_URL` connection string is passed to spawned sessions so they can write their outputs. This means:
+**⚠️ Credentials may be exposed to subagents.** The
+`OPENPROSE_POSTGRES_URL` connection string may be passed to spawned sessions, so
+credentials can appear in agent context or logs. This backend must not be used
+with production, administrator, or otherwise sensitive credentials. Instead:
 
-- Database credentials appear in subagent context and may be logged
-- Treat these credentials as **non-sensitive**
-- Use a **dedicated database** for OpenProse, not your production systems
-- Create a **limited-privilege user** with access only to the `openprose` schema
+- Use a **dedicated database** for OpenProse, not your production systems.
+- Create a **limited-privilege user** with access only to the `openprose` schema.
+- Use a unique, rotatable credential and revoke it if a session or log is exposed.
+- Keep the listener private; do not use PostgreSQL `trust` authentication or
+  publish its port beyond the loopback interface.
 
 **Recommended setup:**
 ```sql
--- Create dedicated user with minimal privileges
-CREATE USER openprose_agent WITH PASSWORD 'changeme';
+-- Create dedicated user with minimal privileges. At the psql prompt, set a
+-- unique password without putting it in shell history or this file.
+CREATE USER openprose_agent;
+\password openprose_agent
 CREATE SCHEMA openprose AUTHORIZATION openprose_agent;
 GRANT ALL ON SCHEMA openprose TO openprose_agent;
 -- User can only access the openprose schema, nothing else
@@ -139,8 +145,9 @@ The fastest path to a running PostgreSQL instance:
 docker run -d \
   --name prose-pg \
   -e POSTGRES_DB=prose \
-  -e POSTGRES_HOST_AUTH_METHOD=trust \
-  -p 5432:5432 \
+  -e POSTGRES_USER=openprose_agent \
+  -e POSTGRES_PASSWORD="$(openssl rand -base64 32)" \
+  -p 127.0.0.1:5432:5432 \
   postgres:16
 ```
 
@@ -148,7 +155,7 @@ Then configure the connection:
 
 ```bash
 mkdir -p .prose
-echo "OPENPROSE_POSTGRES_URL=postgresql://postgres@localhost:5432/prose" > .prose/.env
+echo "OPENPROSE_POSTGRES_URL=postgresql://openprose_agent:<password>@localhost:5432/prose" > .prose/.env
 ```
 
 Management commands:
